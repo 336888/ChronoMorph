@@ -8,7 +8,7 @@ on:
       tag:
         description: Version tag
         required: true
-        default: v1.3.0
+        default: v1.4.0
 
 permissions:
   contents: write
@@ -40,8 +40,49 @@ jobs:
           name: desktop-preview
           path: ${{ runner.temp }}/ChronoMorph-desktop.png
           if-no-files-found: error
+  reality:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        include:
+          - {os: linux, arch: amd64, suffix: ''}
+          - {os: linux, arch: arm64, suffix: ''}
+          - {os: windows, arch: amd64, suffix: '.exe'}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: XTLS/Xray-core
+          ref: 676eaf66f8f05d4d558ee7a74b4736623d3feeb9
+          path: upstream-xray
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: upstream-xray/go.mod
+          cache-dependency-path: upstream-xray/go.sum
+      - name: Build the pinned XTLS transport
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: '0'
+          SUFFIX: ${{ matrix.suffix }}
+        run: |
+          mkdir -p upstream-xray/cmbridge/wire bridge
+          cp integrations/reality/main.go upstream-xray/cmbridge/
+          cp internal/bridgeconfig/config.go upstream-xray/cmbridge/wire/
+          cd upstream-xray
+          go build -mod=readonly -tags cm_xray -trimpath -buildvcs=false -ldflags='-s -w' -o "../bridge/cm-reality$SUFFIX" ./cmbridge
+          cp LICENSE ../bridge/Xray-LICENSE.txt
+          cp "$(go list -mod=readonly -m -f '{{.Dir}}' github.com/xtls/reality)/LICENSE" ../bridge/REALITY-LICENSE.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reality-${{ matrix.os }}-${{ matrix.arch }}
+          path: bridge/
+          if-no-files-found: error
   release:
-    needs: windows
+    needs: [windows, reality]
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ inputs.tag || github.ref_name }}
@@ -60,6 +101,10 @@ jobs:
         with:
           name: desktop-preview
           path: release
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: reality-*
+          path: bridges
       - name: Build and verify release files
         run: |
           [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
@@ -82,12 +127,22 @@ jobs:
           python3 tests/udp_rebind.py release/chronomorph-linux-amd64 --idle --isolate --restart
           python3 tests/udp_rebind.py release/chronomorph-linux-amd64 --first-loss --outage
           python3 tests/throughput.py release/chronomorph-linux-amd64 --transport tcp --mib 4 --runs 2 --min-mbps 20
+          install -m 755 bridges/reality-linux-amd64/cm-reality release/cm-reality
+          go build -trimpath -o "$RUNNER_TEMP/test-origin" tests/testdata/reality_origin.go
+          python3 tests/reality_loopback.py release/chronomorph-linux-amd64 "$RUNNER_TEMP/test-origin"
+          rm release/cm-reality
+          winpkg=packages/chronomorph-windows-amd64
+          mkdir -p "$winpkg"
+          cp bridges/reality-windows-amd64/* release/ChronoMorph-windows-amd64.exe "$winpkg/"
+          (cd "$winpkg" && sha256sum *.exe *LICENSE.txt > SHA256SUMS.txt && zip -q "$GITHUB_WORKSPACE/release/chronomorph-windows-amd64.zip" *)
           cp cm.sh setup_win.ps1 uninstall_win.ps1 client.example.json release/
           for arch in amd64 arm64; do
             pkg="chronomorph-debian-$arch"
             mkdir -p "packages/$pkg"
             cp release/cm.sh "release/chronomorph-linux-$arch" "packages/$pkg/"
-            (cd "packages/$pkg" && sha256sum cm.sh "chronomorph-linux-$arch" > SHA256SUMS.txt && sha256sum -c SHA256SUMS.txt)
+            cp "bridges/reality-linux-$arch/"*LICENSE.txt "packages/$pkg/"
+            install -m 755 "bridges/reality-linux-$arch/cm-reality" "packages/$pkg/cm-reality"
+            (cd "packages/$pkg" && sha256sum *LICENSE.txt cm-reality cm.sh "chronomorph-linux-$arch" > SHA256SUMS.txt && sha256sum -c SHA256SUMS.txt)
             tar -C packages -czf "release/$pkg.tar.gz" "$pkg"
           done
           cd release

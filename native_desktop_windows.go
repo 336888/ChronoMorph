@@ -91,7 +91,7 @@ type desktopUI struct {
 	isError                                           bool
 	running, proxy, global, tun, auto, tlsOnly        bool
 	ip, listen, nodeName                              string
-	webName                                           string
+	webName, realityName                              string
 	tlsPort, udpPort                                  int
 	current                                           *ClientMux
 	profiles                                          []NodeProfile
@@ -200,7 +200,7 @@ func (u *desktopUI) refresh() {
 	u.running, u.proxy, u.global = g.running, g.sysProxyOn, g.router.IsGlobalMode()
 	u.ip, u.listen, u.tlsPort, u.udpPort = g.cfg.ServerIP, g.cfg.Listen, g.cfg.TLSPort, g.cfg.UDPPort
 	u.profiles = append(u.profiles[:0], g.cfg.Profiles...)
-	u.webName = g.cfg.WebName
+	u.webName, u.realityName = g.cfg.WebName, g.cfg.RealityName
 	u.tlsOnly = g.cfg.TLSOnly
 	u.active = g.cfg.ActiveIndex
 	u.nodeName = ""
@@ -246,7 +246,9 @@ func (u *desktopUI) refresh() {
 				name = p.ServerIP
 			}
 			t := "UDP"
-			if p.WebName != "" {
+			if p.RealityName != "" {
+				t = "REALITY · " + p.RealityName
+			} else if p.WebName != "" {
 				t = "HTTPS · " + p.WebName
 			} else if u.tlsOnly && p.TLSPort == 0 {
 				t = "仅 UDP · 此模式不可用"
@@ -537,6 +539,9 @@ func (u *desktopUI) copy(s string) error {
 func (u *desktopUI) transport() string {
 	if u.ip == "" {
 		return "尚未配置节点"
+	}
+	if u.realityName != "" {
+		return "REALITY · " + net.JoinHostPort(u.realityName, strconv.Itoa(u.tlsPort))
 	}
 	if u.webName != "" {
 		return "HTTPS · " + net.JoinHostPort(u.webName, strconv.Itoa(u.tlsPort))

@@ -27,6 +27,7 @@ import (
 
 // Pinned TLS and domain-verified HTTPS use mutually exclusive trust settings.
 type TLSNode struct {
+	RealityNode
 	WebName string `json:"web_name,omitempty"`
 	UDPPort int    `json:"udp_port,omitempty"` // Fixed UDP endpoint for dual-transport nodes.
 	TLSPort int    `json:"tls_port,omitempty"`
@@ -36,6 +37,14 @@ type TLSNode struct {
 func (n TLSNode) validate() error {
 	if n == (TLSNode{}) {
 		return nil
+	}
+	if n.RealityNode != (RealityNode{}) {
+		if _, _, err := n.identity(); err != nil {
+			return err
+		}
+		if n.WebName != "" || n.UDPPort != 0 {
+			return errors.New("REALITY 节点不能混用独立的网站或 UDP 入口")
+		}
 	}
 	if n.WebName != "" {
 		if !validWebsiteName(n.WebName) || n.UDPPort != 0 || n.TLSPin != "" || n.TLSPort < 1 || n.TLSPort > 65535 {
@@ -172,11 +181,20 @@ func clientTLSConfig(master []byte, node TLSNode) (*tls.Config, error) {
 func (cm *ClientMux) dialTLS(ctx context.Context) (net.Conn, error) {
 	addr := net.JoinHostPort(cm.serverIP.String(), strconv.Itoa(cm.tlsNode.TLSPort))
 	dialer := tls.Dialer{NetDialer: &net.Dialer{Timeout: 5 * time.Second}, Config: cm.tlsConfig}
-	raw, err := dialer.DialContext(ctx, "tcp", addr)
+	var conn *tls.Conn
+	var err error
+	if cm.tlsNode.RealityName != "" {
+		conn, err = cm.dialReality(ctx, addr)
+	} else {
+		var raw net.Conn
+		raw, err = dialer.DialContext(ctx, "tcp", addr)
+		if err == nil {
+			conn = raw.(*tls.Conn)
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("TLS/TCP %s: %w", addr, err)
 	}
-	conn := raw.(*tls.Conn)
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
 	if cm.tlsNode.WebName != "" {

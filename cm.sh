@@ -101,7 +101,7 @@ prepare_config_dir() {
 }
 
 gen_share_link() {
-    local key="$1" name="${2:-ChronoMorph}" tls_port=${3:-0} tls_pin=${4:-} udp_port=${5:-0} web_name=${6:-} web_port=${7:-0} only=${8:-false} ip4 ip6
+    local key="$1" name="${2:-ChronoMorph}" tls_port=${3:-0} tls_pin=${4:-} udp_port=${5:-0} web_name=${6:-} web_port=${7:-0} only=${8:-false} reality_node=${9:-null} ip4 ip6
     if [[ -n ${CM_PUBLIC_IP:-} ]]; then
         ip4=$CM_PUBLIC_IP; ip6=$CM_PUBLIC_IP
     else
@@ -118,6 +118,9 @@ gen_share_link() {
             [[ $ip == *:* && $ip =~ ^[[:xdigit:]:.]+$ ]] || continue
         fi
         count=$((count+1))
+        if [[ $reality_node != null ]]; then
+            printf '[IPv%s REALITY] cm+reality://%s\n' "$family" "$(jq -cn --argjson node "$reality_node" --arg s "$ip" --arg k "$key" --arg n "$name-REALITY-v$family" '$node + {s:$s,k:$k,n:$n}' | base64 -w0 | tr '+/' '-_' | tr -d '=')"
+        fi
         if [[ -n $web_name ]]; then
             printf '[IPv%s HTTPS] cm+https://%s\n' "$family" "$(jq -cn --arg s "$ip" --arg k "$key" --arg n "$name-HTTPS-v$family" --arg web "$web_name" --argjson port "$web_port" '{s:$s,k:$k,n:$n,web_name:$web,tls_port:$port}' | base64 -w0 | tr '+/' '-_' | tr -d '=')"
         fi
@@ -157,17 +160,21 @@ check_tcp_entry() {
 }
 
 check_service_entries() {
-    if ! jq -e '.website.only == true' "$CFG_FILE" >/dev/null; then
+    if ! jq -e '.website.only or .reality.only' "$CFG_FILE" >/dev/null; then
         check_tcp_entry || return 1
     fi
-    if jq -e '.website != null' "$CFG_FILE" >/dev/null; then
-        for _ in 1 2 3; do
-            if "$BIN_PATH" website-check -c "$CFG_FILE"; then return 0; fi
+    local mode attempt ok
+    for mode in website reality; do
+        jq -e --arg m "$mode" '.[$m] != null and (if $m=="website" then .reality.only else .website.only end | not)' "$CFG_FILE" >/dev/null || continue
+        local cmd=(website-check)
+        if [[ $mode == reality ]]; then cmd=(reality -check); fi
+        ok=0
+        for attempt in 1 2 3; do
+            if "$BIN_PATH" "${cmd[@]}" -c "$CFG_FILE"; then ok=1; break; fi
             sleep 0.3
         done
-        return 1
-    fi
-    return 0
+        ((ok)) || return 1
+    done
 }
 
 do_install() (
@@ -183,6 +190,13 @@ do_install() (
     apt-get update -qq
     apt-get install -y -qq nftables chrony curl jq >/dev/null
     stage_binary "$work" "$name"
+    local helper="$(dirname "$BIN_PATH")/cm-reality" has_helper=0
+    if [[ -f "$SCRIPT_DIR/cm-reality" ]]; then
+        install -m 755 "$SCRIPT_DIR/cm-reality" "$work/cm-reality"
+        verify_binary "$work" cm-reality "$SCRIPT_DIR/SHA256SUMS.txt"
+        "$work/cm-reality" version
+        has_helper=1
+    fi
     version=$("$work/$name" version)
     [[ $version == "ChronoMorph v"* ]] || { echo "程序版本信息无效" >&2; exit 1; }
     echo "$version"
@@ -259,15 +273,22 @@ EOF
     if systemctl is-active --quiet chronomorph; then was_active=1; fi
     prepare_dual_config "$work/$name" "$work"
     chmod 755 "$work/$name"
+    if ((has_helper)); then
+        if [[ -f "$helper" ]]; then cp -p "$helper" "$work/previous-helper"; fi
+        mv -fT -- "$work/cm-reality" "$helper"
+    fi
     mv -fT -- "$work/$name" "$BIN_PATH"
     if ! systemctl restart chronomorph || ! check_service_entries; then
         if [[ -f "$work/pre-dual.json" ]]; then
             install -m 600 "$work/pre-dual.json" "$CFG_DIR/.dual-config.tmp"
             mv -fT "$CFG_DIR/.dual-config.tmp" "$CFG_FILE"
-            if systemctl restart chronomorph && systemctl is-active --quiet chronomorph; then
+            if ! jq -e '(.reality != null) or (.website != null)' "$CFG_FILE" >/dev/null && systemctl restart chronomorph && systemctl is-active --quiet chronomorph; then
                 echo "TCP $LISTEN_PORT 启用失败，已恢复 UDP 配置。请选 9 指定其他空闲 TCP 端口，再导入双协议链接。" >&2
                 return 0
             fi
+        fi
+        if ((has_helper)); then
+            if [[ -f "$work/previous-helper" ]]; then mv -fT "$work/previous-helper" "$helper"; else rm -f -- "$helper"; fi
         fi
         if ((previous)); then
             mv -fT "$work/previous" "$BIN_PATH"
@@ -290,10 +311,14 @@ show_status() {
 
 show_links() {
     if [[ ! -f "$CFG_FILE" ]]; then echo "尚未安装服务端"; return 0; fi
-    local row name key listen port=0 udp_port pin='' web_name web_port only
+    local row name key listen port=0 udp_port pin='' web_name web_port only reality_node=null
     web_name=$(jq -r '.website.name // empty' "$CFG_FILE")
     web_port=$(jq -r '(.website.listen // ":0") | split(":") | last' "$CFG_FILE")
-    only=$(jq -r '.website.only // false' "$CFG_FILE")
+    only=$(jq -r '.website.only or .reality.only' "$CFG_FILE")
+    if jq -e '.reality.only' "$CFG_FILE" >/dev/null; then web_name=''; fi
+    if jq -e '.reality != null and (.website.only | not)' "$CFG_FILE" >/dev/null; then
+        reality_node=$("$BIN_PATH" reality -export -c "$CFG_FILE") || return 1
+    fi
     udp_port=$(jq -er '.listen | capture(":(?<port>[0-9]+)$").port | tonumber' "$CFG_FILE")
     listen=$(jq -er '.tls_listen // ""' "$CFG_FILE")
     if [[ $only != true && -n $listen ]]; then
@@ -305,7 +330,7 @@ show_links() {
         name=$(jq -r '.name' <<< "$row")
         key=$(jq -r '.key' <<< "$row")
         printf '\n用户 %s\n' "$name"
-        gen_share_link "$key" "$name" "$port" "$pin" "$udp_port" "$web_name" "$web_port" "$only"
+        gen_share_link "$key" "$name" "$port" "$pin" "$udp_port" "$web_name" "$web_port" "$only" "$reality_node"
     done < <(jq -c 'if (.users // [] | length)>0 then .users[] else {name:"default",key:.master_key} end' "$CFG_FILE")
 }
 
@@ -313,7 +338,7 @@ enable_tls() (
     set -e
     [[ -f "$CFG_FILE" && -x "$BIN_PATH" ]] || { echo '请先选 1 安装或升级服务端'; return 1; }
     local current port work pin
-    if jq -e '.website.only == true' "$CFG_FILE" >/dev/null; then echo '当前仅启用 HTTPS，先选 11 恢复并存后再调整旧入口。'; return 1; fi
+    if jq -e '.website.only or .reality.only' "$CFG_FILE" >/dev/null; then echo '先到对应入口菜单恢复并存，再调整旧入口。'; return 1; fi
     exec 9>"$DEPLOY_LOCK"
     flock -n 9 || { echo '已有部署任务在运行' >&2; return 1; }
     current=$(jq -r '.tls_listen // ""' "$CFG_FILE")
@@ -346,7 +371,8 @@ enable_tls() (
 
 migrate_tls_identity() (
     local current="$CFG_DIR/transport.pem" subject before after backup answer state active=0
-    if [[ -f "$CFG_FILE" ]] && jq -e '.website.only == true' "$CFG_FILE" >/dev/null; then echo "当前仅启用 HTTPS，网站使用你自己的证书。"; return 0; fi
+    if [[ -f "$CFG_FILE" ]] && jq -e '.reality != null' "$CFG_FILE" >/dev/null; then echo "迁移会改变 REALITY 节点的内部指纹，请先关闭该入口，再迁移并重新导出链接。"; return 1; fi
+    if [[ -f "$CFG_FILE" ]] && jq -e '.website.only == true'  "$CFG_FILE" >/dev/null; then echo "当前仅启用 HTTPS，网站使用你自己的证书。"; return 0; fi
     exec 9>"$DEPLOY_LOCK" || return 1
     flock -n 9 || { echo '已有部署任务在运行' >&2; return 1; }
     [[ -x "$BIN_PATH" && -f "$CFG_FILE" && -f "$current" && ! -L "$current" ]] || {
@@ -430,12 +456,15 @@ do_uninstall() {
     rm -f "$SERVICE_FILE" "$NFT_FILE" /etc/sysctl.d/99-chronomorph.conf
     systemctl daemon-reload
     nft delete table inet chronomorph 2>/dev/null || true
-    rm -rf "$BIN_PATH" "$CFG_DIR" "$MGR_PATH"
+    rm -rf "$BIN_PATH" "$(dirname "$BIN_PATH")/cm-reality" "$CFG_DIR" "$MGR_PATH"
     echo -e "${GREEN}已卸载干净。${PLAIN}"; exit 0
 }
 
-configure_website() (
-    local work action name port cert key origin answer active=0 changed=0
+configure_website() { configure_entry website; }
+configure_entry() (
+    local mode=$1 work action name port cert key origin target answer active=0 changed=0
+    local other=reality
+    if [[ $mode == reality ]]; then other=website; fi
     [[ -f "$CFG_FILE" ]] || { echo "请先选 1 安装或升级"; return 1; }
     exec 9>"$DEPLOY_LOCK" || return 1
     flock -n 9 || { echo "已有部署任务在运行" >&2; return 1; }
@@ -447,7 +476,7 @@ configure_website() (
         if ((rc != 0 && changed)); then
             if mv -fT -- "$work/original" "$CFG_FILE"; then
                 if ((active)); then systemctl restart chronomorph || echo "请检查服务状态" >&2; fi
-                echo "网站配置验证失败，已恢复先前配置。" >&2
+                echo "入口配置验证失败，已恢复先前配置。" >&2
             else
                 echo "无法自动恢复，请从 $work/original 恢复配置。" >&2
                 exit 1
@@ -459,41 +488,57 @@ configure_website() (
     trap finish_website EXIT
     trap 'exit 1' HUP INT TERM
     cp -p "$CFG_FILE" "$work/original" || return 1
-    echo "1 配置网站（与现有入口并存）  2 仅保留网站入口  3 恢复并存  4 关闭网站入口  0 返回"
+    echo "1 配置 $mode 入口并保留现有连接方式    2 仅启用 $mode    3 恢复并存    4 关闭此入口    0 返回"
     read -rp "请选择: " action || return 1
     case $action in
         1)
-            read -rp "你控制的 HTTPS 域名: " name || return 1
+            if jq -e --arg other "$other" '.[$other].only' "$CFG_FILE" >/dev/null; then
+                echo "请先在 $other 菜单中恢复并存"; return 1
+            fi
+            if [[ $mode == reality ]]; then
+                [[ -x "$(dirname "$BIN_PATH")/cm-reality" ]] || { echo "请解压本版本 Debian 完整包，从包内运行 cm.sh 并选 1"; return 1; }
+                read -rp "目标 HTTPS 网站域名（例如 aws.amazon.com）: " name || return 1
+            else
+                read -rp "你控制的 HTTPS 域名: " name || return 1
+            fi
             read -rp "此程序独占的 TCP 端口 [443]: " port || return 1
             port=${port:-443}
             [[ $port =~ ^[1-9][0-9]{0,4}$ ]] && ((port <= 65535)) || { echo "端口无效"; return 1; }
+            if [[ $mode == reality ]]; then
+                read -rp "目标 TLS 地址 [$name:443]: " target || return 1
+                jq --arg name "${name,,}" --arg listen ":$port" --arg target "${target:-$name:443}" '.reality={name:$name,listen:$listen,target:$target,only:false}' "$CFG_FILE" > "$work/new" || return 1
+            else
             read -rp "网站证书链 PEM 绝对路径: " cert || return 1
             read -rp "网站私钥 PEM 绝对路径: " key || return 1
             [[ $cert == /* && $key == /* ]] || { echo "请输入绝对路径"; return 1; }
             read -rp "本机对外发布的网站源站 [http://127.0.0.1:8080]: " origin || return 1
-            jq --arg name "${name,,}" --arg listen ":$port" --arg cert "$cert" --arg key "$key" --arg origin "${origin:-http://127.0.0.1:8080}"               '.website={name:$name,listen:$listen,cert_file:$cert,key_file:$key,origin:$origin,only:false}' "$CFG_FILE" > "$work/new" || return 1 ;;
+            jq --arg name "${name,,}" --arg listen ":$port" --arg cert "$cert" --arg key "$key" --arg origin "${origin:-http://127.0.0.1:8080}"               '.website={name:$name,listen:$listen,cert_file:$cert,key_file:$key,origin:$origin,only:false}' "$CFG_FILE" > "$work/new" || return 1
+            fi ;;
         2|3)
-            jq -e '.website != null' "$CFG_FILE" >/dev/null || { echo "请先配置网站"; return 1; }
+            jq -e --arg mode "$mode" '.[$mode] != null' "$CFG_FILE" >/dev/null || { echo "请先配置入口"; return 1; }
             if [[ $action == 2 ]]; then
-                read -rp "将停用本服务的旧 TCP 和 UDP 入口。已验证新链接，继续？[y/N] " answer || return 1
+                read -rp "将停用本服务的其他入口。已验证新链接，继续？[y/N] " answer || return 1
                 [[ $answer == y || $answer == Y ]] || return 0
             fi
-            jq --arg a "$action" '.website.only=($a=="2")' "$CFG_FILE" > "$work/new" || return 1 ;;
-        4) jq 'del(.website)' "$CFG_FILE" > "$work/new" || return 1 ;;
+            jq --arg a "$action" --arg mode "$mode" --arg other "$other" '.[$mode].only=($a=="2") | if .[$other]!=null and $a=="2" then .[$other].only=false else . end'  "$CFG_FILE" > "$work/new" || return 1 ;;
+        4) jq --arg mode "$mode" 'del(.[$mode])'  "$CFG_FILE" > "$work/new" || return 1 ;;
         0) return 0 ;;
         *) echo "选项无效"; return 1 ;;
     esac
-    if jq -e '.website != null' "$work/new" >/dev/null; then
+    if [[ $mode == website ]] && jq -e '.website != null' "$work/new" >/dev/null; then
         "$BIN_PATH" website-check -config-only -c "$work/new" || return 1
     fi
     if systemctl is-active --quiet chronomorph; then active=1; fi
     changed=1
     mv -fT "$work/new" "$CFG_FILE" || return 1
+    if [[ $mode == reality ]] && jq -e '.reality != null' "$CFG_FILE" >/dev/null; then
+        "$BIN_PATH" reality -c "$CFG_FILE" -create || return 1
+    fi
     if ((active)); then
         systemctl restart chronomorph && check_service_entries || return 1
         echo "配置已启用，可选 4 导出链接。"
     else
-        echo "服务当前已停止。启动后可选 4 导出链接，并运行 chronomorph website-check 验证。"
+        echo "服务当前已停止。启动后可选 4 导出链接。"
     fi
 )
 main_menu() {
@@ -504,12 +549,12 @@ main_menu() {
         echo "1. 一键安装部署    2. 状态与跳频排障  3. 实时日志"
         echo "4. 导出分享链接    5. 实时流量看板    6. 热重载配置"
         echo "7. 打包备份配置    8. 彻底卸载    9. 设置双协议 TCP 端口"
-        echo "10. 迁移旧版 TLS 证书    11. 自有域名 HTTPS 网站入口    0. 退出"
-        read -rp "请选择 [0-11]: " ch
+        echo "10. 迁移旧版 TLS 证书    11. 自有域名 HTTPS 网站入口    12. REALITY 免证书入口    0. 退出"
+        read -rp "请选择 [0-12]: " ch
         case "$ch" in
             1) do_install ;; 2) show_status ;; 3) journalctl -u chronomorph -f -n 50 || true ;;
             4) show_links ;; 5) show_traffic_stats ;; 6) systemctl reload-or-restart chronomorph ;;
-            7) do_backup ;; 8) do_uninstall ;; 9) enable_tls ;; 10) migrate_tls_identity || echo "证书迁移未完成" >&2 ;; 11) configure_website || echo "网站操作未完成" >&2 ;; 0) exit 0 ;;
+            7) do_backup ;; 8) do_uninstall ;; 9) enable_tls ;; 10) migrate_tls_identity || echo "证书迁移未完成" >&2 ;; 12) configure_entry reality || echo "REALITY 操作未完成" >&2 ;; 11) configure_website || echo "网站操作未完成" >&2 ;; 0) exit 0 ;;
         esac
         read -rp "按回车返回..." _
     done

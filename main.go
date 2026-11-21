@@ -40,6 +40,7 @@ const (
 
 type Config struct {
 	TLSNode
+	Reality       *RealityConfig `json:"reality,omitempty"`
 	Website       *WebsiteConfig `json:"website,omitempty"`
 	TLSOnly       bool           `json:"tls_only,omitempty"`
 	TLSListen     string         `json:"tls_listen,omitempty"`
@@ -72,6 +73,19 @@ func main() {
 		}
 		if err := restoreSystemProxy(); err != nil {
 			log.Fatal(err)
+		}
+	case "reality":
+		fs := flag.NewFlagSet("reality", flag.ExitOnError)
+		path := fs.String("c", "/etc/chronomorph/server.json", "server configuration")
+		create := fs.Bool("create", false, "create missing server identity")
+		export := fs.Bool("export", false, "export public transport metadata")
+		check := fs.Bool("check", false, "authenticate and ping the local REALITY listener")
+		_ = fs.Parse(os.Args[2:])
+		if err := realityAction(*path, *create, *export, *check); err != nil {
+			log.Fatal(err)
+		}
+		if *check && !*export {
+			fmt.Println("目标网站证书和 REALITY 节点认证通过")
 		}
 	case "website-check":
 		fs := flag.NewFlagSet("website-check", flag.ExitOnError)
@@ -157,8 +171,19 @@ func runServer(cfgPath string) {
 	StartLocalStatsAPI(multiEng, guard)
 
 	var listeners int
-	failed := make(chan error, 3)
-	legacy := cfg.Website == nil || !cfg.Website.Only
+	failed := make(chan error, 4)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	webOnly := cfg.Website != nil && cfg.Website.Only
+	realityOnly := cfg.Reality != nil && cfg.Reality.Only
+	if webOnly && realityOnly {
+		log.Fatal("只能选择一个独占入口")
+	}
+	legacy := !webOnly && !realityOnly
+	if cfg.Reality != nil && !webOnly {
+		listeners++
+		go func() { failed <- serveReality(ctx, cfg.Reality, filepath.Dir(cfgPath), multiEng) }()
+	}
 	if legacy {
 		rawPC, err := listenTunnelUDP("udp", cfg.Listen)
 		if err == nil {
@@ -203,7 +228,7 @@ func runServer(cfgPath string) {
 			log.Printf("[TLS] 无法启动 %s: %v", cfg.TLSListen, err)
 		}
 	}
-	if cfg.Website != nil {
+	if cfg.Website != nil && !realityOnly {
 		web, err := cfg.Website.server(multiEng)
 		if err == nil {
 			var ln net.Listener
