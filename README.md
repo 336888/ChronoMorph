@@ -4,6 +4,8 @@ ChronoMorph 提供 TLS 1.3/TCP 和 UDP 两种传输。两者都支持本地 HTTP
 
 在 Windows「我的节点」中选中一行，点击「删除选中节点」。删除活动节点会断开连接，可在剩余节点中重新启动。删除只影响这台客户端。UDP 节点超时时，两端升级到 v1.1.2 后可在「连接日志」查看是 Debian 节点未响应，还是节点已响应但目标连接失败。
 
+v1.2.3 客户端支持在节点握手超时时直接断开或切换节点。网页通道等待节点应答期间，游戏和语音仍可独立建立 UDP 转发。此次升级可以沿用 v1.2.2 服务端及现有节点链接。
+
 ## 游戏与并发下载
 
 v1.1.1 客户端将 SOCKS5 UDP 游戏和语音放在独立传输连接上。第一次发送 UDP 请求时才建立这条连接。同一节点上的 TCP 下载使用另一条连接。两条连接仍共享用户配额和实际链路带宽。现有 `cm://` 与 `cm+tls://` 节点可以继续使用。先升级 Debian 服务端，再退出并更新 Windows 客户端，可同时获得端口变化、快速重启和并发流控修复。
@@ -32,7 +34,7 @@ python3 tests/throughput.py ./chronomorph-linux-amd64 --transport tcp --rtt 200 
 
 ## 快速开始
 
-1. **推送到 GitHub 自动编译**：在 Actions 的 Release ChronoMorph 页面手动指定版本，或推送标签 `git tag v1.2.2 && git push origin v1.2.2`，在 Releases 页面下载四端产物。
+1. **推送到 GitHub 自动编译**：在 Actions 的 Release ChronoMorph 页面手动指定版本，或推送标签 `git tag v1.2.3 && git push origin v1.2.3`，在 Releases 页面下载四端产物。
 2. **Debian 服务端部署**：按菜单放行双协议节点的 TCP 和 UDP 端口，从 Release 下载 `chronomorph-debian-amd64.tar.gz`（x86_64）或 `chronomorph-debian-arm64.tar.gz`（aarch64）。解压并进入同名目录，运行 `sudo bash cm.sh`，选 1 安装或升级。离线包含服务端程序，首次安装系统依赖仍使用 apt，后续输入 `cm` 唤出管理菜单。
 3. **Windows 客户端**：双击 Release 中的 `ChronoMorph-windows-amd64.exe` 打开原生桌面窗口，在「导入节点」中粘贴分享链接。最小化或关闭窗口会收起到托盘，再次双击 EXE 或选择托盘「打开主窗口」即可恢复。退出请选择托盘「彻底退出」。如需 TUN 虚拟网卡，将 `wintun.dll` 放至同目录并以管理员运行。
 4. **Android 客户端**：提供 ARM64 命令行程序。在可执行目录准备好 `client.json` 后，运行 `chmod +x chronomorph_android_arm64 && ./chronomorph_android_arm64 client -c client.json`，默认监听 `127.0.0.1:1080`，接入 Mihomo/Clash 的 `socks5` 节点（并在规则顶部放行 VPS IP 直连）。

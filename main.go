@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
@@ -282,6 +283,9 @@ type ClientMux struct {
 	tlsNode         TLSNode
 	closed          bool
 	mu              sync.Mutex
+	generation      uint64
+	dialDone        chan struct{}
+	cancelDial      context.CancelFunc
 	serverIP        net.IP
 	sess            *smux.Session
 	udpPath         *RTPPacketConn
@@ -326,46 +330,82 @@ func (cm *ClientMux) OpenStream() (*smux.Stream, error) {
 	return stream, err
 }
 
-// Only the dial and first round trip are shared. The short negative cache also
-// prevents queued callers from serially probing the same unreachable node.
+// Share one handshake per lane. Neither a handshake nor a blocked stream write
+// may hold the lock used by Stop, profile changes, or the independent UDP lane.
 func (cm *ClientMux) openSessionStream() (*smux.Stream, *smux.Session, byte, error) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
-	if cm.closed {
-		return nil, nil, 0, net.ErrClosed
-	}
-	if cm.sess != nil {
-		if !cm.sess.IsClosed() {
-			if st, err := cm.sess.OpenStream(); err == nil {
-				return st, cm.sess, cm.dialMode, nil
+	generation := cm.generation
+	retried := false
+	for !cm.closed && generation == cm.generation {
+		session, mode := cm.sess, cm.dialMode
+		if session == nil {
+			if err := cm.ensureSessionLocked(); err != nil {
+				return nil, nil, 0, err
 			}
+			continue
+		}
+		cm.mu.Unlock()
+		stream, err := session.OpenStream()
+		cm.mu.Lock()
+		if cm.sess != session {
+			// The displaced session already owns and closes its pending streams.
+			continue
+		}
+		if err == nil {
+			return stream, session, mode, nil
 		}
 		cm.closeLocked()
+		if retried {
+			cm.cacheDialErrorLocked(err)
+			return nil, nil, 0, err
+		}
+		retried = true
 	}
+	return nil, nil, 0, net.ErrClosed
+}
+
+// Called with mu held and no installed session. Waiters recheck the current
+// generation, session and cached error after the attempt finishes.
+func (cm *ClientMux) ensureSessionLocked() error {
 	if time.Now().Before(cm.retryAfter) {
-		return nil, nil, 0, cm.lastDialErr
+		return cm.lastDialErr
 	}
-	path, err := cm.connectTransport()
-	if err == nil {
-		cm.sess, cm.udpPath, cm.tcpPath, cm.dialMode = path.session, path.udp, path.tcp, path.mode
-		transport := int32(1)
-		if path.tcp != nil {
-			transport = 2
-		}
-		cm.activeTransport.Store(transport)
+	if pending := cm.dialDone; pending != nil {
+		cm.mu.Unlock()
+		<-pending
+		cm.mu.Lock()
+		return nil
 	}
-	if err == nil {
-		var st *smux.Stream
-		st, err = cm.sess.OpenStream()
-		if err == nil {
-			cm.lastDialErr = nil
-			cm.retryAfter = time.Time{}
-			return st, cm.sess, cm.dialMode, nil
-		}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	cm.dialDone, cm.cancelDial = done, cancel
+	cm.mu.Unlock()
+	path, err := cm.connectTransport(ctx)
+	cancel()
+	cm.mu.Lock()
+	if cm.dialDone != done {
+		path.close()
+		return net.ErrClosed
 	}
-	cm.closeLocked()
+	close(done)
+	cm.dialDone, cm.cancelDial = nil, nil
+	if err != nil {
+		cm.cacheDialErrorLocked(err)
+		return err
+	}
+	cm.sess, cm.udpPath, cm.tcpPath, cm.dialMode = path.session, path.udp, path.tcp, path.mode
+	transport := int32(1)
+	if path.tcp != nil {
+		transport = 2
+	}
+	cm.activeTransport.Store(transport)
+	cm.lastDialErr, cm.retryAfter = nil, time.Time{}
+	return nil
+}
+
+func (cm *ClientMux) cacheDialErrorLocked(err error) {
 	cm.lastDialErr, cm.retryAfter = err, time.Now().Add(500*time.Millisecond)
-	return nil, nil, 0, err
 }
 
 // A late timeout on an old stream must not close a replacement session or a
@@ -450,17 +490,24 @@ func (cm *ClientMux) dialUDP() (net.Conn, *RTPPacketConn, error) {
 func (cm *ClientMux) Reset() {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
-	cm.closeLocked()
-	if cm.udpRelay != nil {
-		cm.udpRelay.Close()
-		cm.udpRelay = nil
-	}
+	cm.resetLocked()
 }
 
 func (cm *ClientMux) Close() {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	cm.closed = true
+	cm.resetLocked()
+}
+
+func (cm *ClientMux) resetLocked() {
+	cm.generation++
+	if cm.dialDone != nil {
+		cm.cancelDial()
+		close(cm.dialDone)
+		cm.dialDone, cm.cancelDial = nil, nil
+	}
+	cm.lastDialErr, cm.retryAfter = nil, time.Time{}
 	cm.closeLocked()
 	if cm.udpRelay != nil {
 		cm.udpRelay.Close()

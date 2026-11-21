@@ -70,11 +70,11 @@ func (cm *ClientMux) dialPath(ctx context.Context, tcp bool) (tunnelPath, error)
 	return p, nil
 }
 
-func (cm *ClientMux) connectTransport() (tunnelPath, error) {
+func (cm *ClientMux) connectTransport(parent context.Context) (tunnelPath, error) {
 	if cm.tlsNode.UDPPort == 0 {
-		return cm.dialPath(context.Background(), cm.tlsConfig != nil)
+		return cm.dialPath(parent, cm.tlsConfig != nil)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	type outcome struct {
 		path tunnelPath
@@ -101,6 +101,8 @@ func (cm *ClientMux) connectTransport() (tunnelPath, error) {
 	var tcpErr, udpErr error
 	for {
 		select {
+		case <-ctx.Done():
+			return tunnelPath{}, ctx.Err()
 		case <-fallback:
 			startOther()
 		case r := <-results:
