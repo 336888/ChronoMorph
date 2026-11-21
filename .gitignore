@@ -1,0 +1,17 @@
+dist/
+*.exe
+*.syso
+*.dll
+chronomorph
+chronomorph_linux*
+chronomorph_android*
+client.json
+server.json
+traffic.json
+*.log
+*.tar.gz
+*.tmp
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

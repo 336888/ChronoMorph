@@ -1,0 +1,11 @@
+{
+  "listen": ":40000",
+  "master_key": "<由 cm.sh 自动生成>",
+  "users": [
+    {
+      "name": "default",
+      "key": "<64位 Hex MasterKey>",
+      "limit_gb": 500
+    }
+  ]
+}

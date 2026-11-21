@@ -1,0 +1,9 @@
+{
+  "listen": "127.0.0.1:1080",
+  "server_ip": "",
+  "master_key": "",
+  "active_index": 0,
+  "profiles": [],
+  "direct_domains": ["cn", "baidu.com", "qq.com", "taobao.com", "jd.com", "bilibili.com", "zhihu.com", "aliyun.com"],
+  "block_domains": ["doubleclick.net", "googlesyndication.com", "google-analytics.com"]
+}

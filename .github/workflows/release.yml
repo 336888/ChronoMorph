@@ -1,0 +1,32 @@
+name: Release ChronoMorph
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - run: go mod tidy && go test -v ./...
+      - run: |
+          mkdir -p release
+          VER="${GITHUB_REF_NAME}"
+          LDFLAGS="-s -w -X main.AppVersion=${VER}"
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="${LDFLAGS} -H=windowsgui" -o release/ChronoMorph-windows-amd64.exe .
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="${LDFLAGS}" -o release/chronomorph-linux-amd64 .
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="${LDFLAGS}" -o release/chronomorph-linux-arm64 .
+          cp cm.sh setup_win.ps1 uninstall_win.ps1 client.example.json release/
+          cd release && sha256sum * > SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true

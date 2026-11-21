@@ -1,0 +1,12 @@
+services:
+  chronomorph:
+    build: .
+    container_name: chronomorph
+    restart: always
+    network_mode: host
+    volumes:
+      - /etc/chronomorph:/etc/chronomorph
+    deploy:
+      resources:
+        limits:
+          memory: 512M
