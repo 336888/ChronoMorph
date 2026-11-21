@@ -25,15 +25,19 @@ const (
 const (
 	homePage = iota + 1
 	nodesPage
+	chainPage
+	adsPage
 	logsPage
 	prefsPage
 	importPage
 	manualPage
-	routingPage
+	domainPage
 )
 const (
 	navHome = iota + 100
 	navNodes
+	navChain
+	navAds
 	navLogs
 	navPrefs
 	importAction
@@ -55,8 +59,13 @@ const (
 	copyLog
 	deleteNode
 	tlsOnlyAction
-	openRouting
-	applyRouting
+	saveChainAction
+	openDomainTools
+	saveSubsAction
+	pauseAdsAction
+	checkDomainAction
+	addAllowedAction
+	saveAllowedAction
 	addAdSource
 )
 const (
@@ -69,6 +78,8 @@ const (
 	noticeControl
 	chainList
 	subscriptionEdit
+	domainEdit
+	allowedEdit
 )
 
 type nativeControl struct {
@@ -77,6 +88,7 @@ type nativeControl struct {
 	label string
 }
 type desktopResult struct {
+	originPage     int
 	message        string
 	err            error
 	nextPage       int
@@ -85,6 +97,8 @@ type desktopResult struct {
 	measuredClient *ClientMux
 }
 type desktopUI struct {
+	adStatus                                          string
+	adPaused                                          bool
 	entryLabel                                        string
 	entryChoices                                      []string
 	exitLabel                                         string
@@ -133,7 +147,7 @@ func (u *desktopUI) setupControls() {
 	n := createControl("STATIC", "", 0, 0x40004000, u.rect(214, 506, 600, 28), u.hwnd, noticeControl, u.instance)
 	uc("SendMessageW", n, 0x30, u.font(13, 400), 1)
 	u.controls[noticeControl] = &nativeControl{n, 0, ""}
-	for i, name := range []string{"连接概览", "我的节点", "连接日志", "设置"} {
+	for i, name := range []string{"连接概览", "我的节点", "链式代理", "去广告", "连接日志", "设置"} {
 		u.button(navHome+i, 0, 14, 114+i*49, 158, 41, name)
 	}
 	u.button(importAction, 0, 704, 27, 113, 37, "导入节点")
@@ -154,11 +168,18 @@ func (u *desktopUI) setupControls() {
 	u.button(tunAction, prefsPage, 685, 224, 104, 36, "开启 TUN")
 	u.button(autoAction, prefsPage, 685, 302, 104, 36, "开启")
 	u.button(tlsOnlyAction, prefsPage, 685, 398, 104, 36, "开启")
-	u.button(openRouting, prefsPage, 555, 466, 244, 32, "链式代理与去广告")
-	u.input(chainList, routingPage, 224, 133, 565, 75, "LISTBOX", 0x200001|0x100)
-	u.input(subscriptionEdit, routingPage, 224, 299, 565, 72, "EDIT", 0x4|0x40|0x200000|0x1000)
-	u.button(addAdSource, routingPage, 224, 383, 203, 34, "添加 217heidai 订阅")
-	u.button(applyRouting, routingPage, 445, 383, 180, 34, "保存并更新规则")
+	u.input(chainList, chainPage, 231, 145, 565, 195, "LISTBOX", 0x200001|0x100)
+	u.button(saveChainAction, chainPage, 231, 391, 146, 40, "保存链路")
+	u.input(subscriptionEdit, adsPage, 231, 215, 565, 91, "EDIT", 0x4|0x40|0x200000|0x1000)
+	u.button(addAdSource, adsPage, 231, 320, 187, 36, "添加 217heidai 订阅")
+	u.button(saveSubsAction, adsPage, 620, 320, 177, 36, "保存并更新订阅")
+	u.button(pauseAdsAction, adsPage, 670, 110, 127, 36, "暂停过滤")
+	u.button(openDomainTools, adsPage, 616, 403, 181, 37, "域名检查与放行")
+	u.input(domainEdit, domainPage, 231, 137, 345, 35, "EDIT", 0x80)
+	u.button(checkDomainAction, domainPage, 590, 137, 89, 35, "检查")
+	u.button(addAllowedAction, domainPage, 687, 137, 110, 35, "放行此域名")
+	u.input(allowedEdit, domainPage, 231, 261, 565, 119, "EDIT", 0x4|0x40|0x200000|0x1000)
+	u.button(saveAllowedAction, domainPage, 642, 397, 155, 37, "保存放行名单")
 	u.input(linkEdit, importPage, 224, 151, 563, 85, "EDIT", 0x4|0x40|0x200000)
 	u.button(saveImport, importPage, 224, 262, 130, 40, "导入并使用")
 	u.button(pasteImport, importPage, 365, 262, 140, 40, "从剪贴板粘贴")
@@ -184,7 +205,7 @@ func (u *desktopUI) setPage(page int) {
 		uc("ShowWindow", c.h, cmd)
 	}
 	switch page {
-	case routingPage:
+	case chainPage:
 		g := u.ctrl
 		g.mu.Lock()
 		cfg := *g.cfg
@@ -212,7 +233,16 @@ func (u *desktopUI) setPage(page int) {
 			}
 		}
 		uc("SendMessageW", h, 0x186, uintptr(idx), 0)
-		setText(u.controls[subscriptionEdit].h, strings.Join(cfg.AdSubscriptions, "\r\n"))
+	case adsPage, domainPage:
+		g := u.ctrl
+		g.mu.Lock()
+		src, allowed := strings.Join(g.cfg.AdSubscriptions, "\r\n"), strings.Join(g.cfg.AdAllowDomains, "\r\n")
+		g.mu.Unlock()
+		if page == adsPage {
+			setText(u.controls[subscriptionEdit].h, src)
+		} else {
+			setText(u.controls[allowedEdit].h, allowed)
+		}
 	case importPage:
 		setText(u.controls[linkEdit].h, "")
 		uc("SetFocus", u.controls[linkEdit].h)
@@ -239,6 +269,21 @@ func (u *desktopUI) refresh() {
 	g := u.ctrl
 	if !g.mu.TryLock() {
 		return
+	}
+	if u.page == adsPage {
+		u.adPaused = g.cfg.AdPaused
+		r := g.router.ads.Load()
+		switch {
+		case len(g.cfg.AdSubscriptions) == 0:
+			u.adStatus = "尚未添加订阅"
+		case r == nil:
+			u.adStatus = "等待载入规则"
+		default:
+			u.adStatus = fmt.Sprintf("%d 个订阅 · %d 条拦截规则 · %d 条例外", len(g.cfg.AdSubscriptions), len(r.blocks), len(r.exceptions))
+		}
+		if u.adPaused {
+			u.adStatus = "已暂停 · " + u.adStatus
+		}
 	}
 	u.running, u.proxy, u.global = g.running, g.sysProxyOn, g.router.IsGlobalMode()
 	u.ip, u.listen, u.tlsPort, u.udpPort = g.cfg.ServerIP, g.cfg.Listen, g.cfg.TLSPort, g.cfg.UDPPort
@@ -280,6 +325,11 @@ func (u *desktopUI) refresh() {
 	u.label(tunAction, onLabel(u.tun))
 	u.label(autoAction, onLabel(u.auto))
 	u.label(tlsOnlyAction, onLabel(u.tlsOnly))
+	pauseLabel := "暂停过滤"
+	if u.adPaused {
+		pauseLabel = "恢复过滤"
+	}
+	u.label(pauseAdsAction, pauseLabel)
 	if u.page == nodesPage {
 		enable := uintptr(0)
 		if len(u.profiles) > 0 {
@@ -356,6 +406,13 @@ func (u *desktopUI) finish() {
 	select {
 	case r := <-u.results:
 		u.busy = false
+		if r.originPage != 0 && r.originPage != u.page {
+			if r.err != nil {
+				log.Printf("[去广告] %v", r.err)
+			}
+			u.refresh()
+			return
+		}
 		if r.err != nil {
 			u.message = r.err.Error()
 			u.isError = true
@@ -380,12 +437,17 @@ func (u *desktopUI) command(id int) {
 		u.setPage(id - navHome + 1)
 		return
 	}
-	if u.busy {
-		return
+	// Local policy edits may proceed while an unrelated subscription downloads.
+	switch id {
+	case checkDomainAction, openDomainTools, saveChainAction, pauseAdsAction, addAllowedAction, saveAllowedAction:
+	default:
+		if u.busy {
+			return
+		}
 	}
 	switch id {
-	case openRouting:
-		u.setPage(routingPage)
+	case openDomainTools:
+		u.setPage(domainPage)
 	case addAdSource:
 		h := u.controls[subscriptionEdit].h
 		lines := strings.Fields(getText(h))
@@ -395,17 +457,44 @@ func (u *desktopUI) command(id int) {
 			}
 		}
 		setText(h, strings.Join(append(lines, defaultAdSource), "\r\n"))
-	case applyRouting:
+	case saveChainAction:
 		idx := int(int32(uc("SendMessageW", u.controls[chainList].h, 0x188, 0, 0)))
 		if idx < 0 || idx >= len(u.entryChoices) {
 			u.feedback("请选择前置节点，或选择关闭链式代理", true)
 			return
 		}
-		entry, src := u.entryChoices[idx], getText(u.controls[subscriptionEdit].h)
+		entry := u.entryChoices[idx]
+		u.localFeedback("链路已保存", g.saveChain(entry))
+	case saveSubsAction:
+		sources := getText(u.controls[subscriptionEdit].h)
 		u.work(func() desktopResult {
-			n, err := g.applyRouting(entry, src)
-			return desktopResult{message: fmt.Sprintf("已保存 · 去广告规则 %d 条", n), err: err}
+			n, err := g.saveSubscriptions(sources)
+			return desktopResult{originPage: adsPage, message: fmt.Sprintf("订阅已保存 · %d 条拦截规则", n), err: err}
 		})
+	case pauseAdsAction:
+		u.localFeedback("", g.toggleAdPause())
+	case checkDomainAction:
+		d, err := inputDomain(getText(u.controls[domainEdit].h))
+		if err != nil {
+			u.feedback(err.Error(), true)
+			return
+		}
+		u.feedback(g.router.filter(d).String(), false)
+	case addAllowedAction, saveAllowedAction:
+		list := getText(u.controls[allowedEdit].h)
+		if id == addAllowedAction {
+			d, err := inputDomain(getText(u.controls[domainEdit].h))
+			if err != nil {
+				u.feedback(err.Error(), true)
+				return
+			}
+			list += "\n" + d
+		}
+		err := g.saveAllowList(list)
+		if err == nil {
+			u.setPage(domainPage)
+		}
+		u.localFeedback("放行名单已保存", err)
 	case importAction:
 		u.setPage(importPage)
 	case manualAction:
@@ -573,6 +662,15 @@ func (u *desktopUI) updateNotice() {
 		line = "本地监听    " + listen
 	}
 	u.label(noticeControl, line)
+}
+
+func (u *desktopUI) localFeedback(success string, err error) {
+	if err != nil {
+		u.feedback(err.Error(), true)
+	} else {
+		u.feedback(success, false)
+	}
+	u.refresh()
 }
 
 func (u *desktopUI) feedback(s string, isError bool) {

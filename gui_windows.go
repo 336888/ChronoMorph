@@ -181,7 +181,7 @@ func RunWindowsGUI(cfgPath string) {
 		cfgPath: cfgPath,
 		pacErr:  pacErr,
 		cfg:     cfg,
-		router:  NewRouter(cfg.DirectDomains, cfg.BlockDomains),
+		router:  cfg.newRouter(),
 	}
 
 	stopCh := make(chan struct{})

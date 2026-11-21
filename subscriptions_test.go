@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
 	"golang.org/x/net/dns/dnsmessage"
@@ -43,5 +45,61 @@ func TestSubscriptionRulesAndDNS(t *testing.T) {
 	}
 	if r, _, err := loadAdRules(t.Context(), filepath.Join(dir, "client.json"), nil, false); err != nil || len(r.blocks) != 0 {
 		t.Fatal("failed to disable subscriptions")
+	}
+}
+
+func TestAdDecisionsMatchAcrossDNSAndProxy(t *testing.T) {
+	cfg := Config{AdAllowDomains: []string{"login.ads.example"}, BlockDomains: []string{"always.login.ads.example"}}
+	router := cfg.newRouter()
+	rules := &adRules{blocks: map[string]uint8{}, exceptions: map[string]uint8{}}
+	if err := parseAdSource([]byte("ads.example\n@@||public.ads.example^\n"), rules, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := parseAdSource([]byte("ads.example\nmetrics.ads.example\n"), rules, 2); err != nil {
+		t.Fatal(err)
+	}
+	router.ads.Store(rules)
+	for _, tc := range []struct {
+		host    string
+		blocked bool
+		matched string
+		src     uint8
+	}{
+		{"a.metrics.ads.example", true, "metrics.ads.example", 2},
+		{"ADS.EXAMPLE.", true, "ads.example", 1},
+		{"safe.public.ads.example", false, "public.ads.example", 1},
+		{"x.login.ads.example", false, "login.ads.example", 0},
+		{"always.login.ads.example", true, "always.login.ads.example", 0},
+		{"other.example", false, "", 0},
+	} {
+		result := router.filter(tc.host)
+		if result.blocked != tc.blocked || result.domain != tc.matched || result.source != tc.src {
+			t.Fatalf("%s: %+v", tc.host, result)
+		}
+		q := dnsmessage.Message{Questions: []dnsmessage.Question{{Name: dnsmessage.MustNewName(strings.TrimSuffix(tc.host, ".") + "."), Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET}}}
+		wire, err := q.Pack()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if blocked := blockedDNS(wire, router) != nil; blocked != tc.blocked || router.ShouldBlock(tc.host+":443") != blocked {
+			t.Fatalf("proxy/DNS disagree on %s", tc.host)
+		}
+	}
+	router.setAdPreferences(nil, true)
+	if router.ShouldBlock("metrics.ads.example") || !router.ShouldBlock("always.login.ads.example") {
+		t.Fatal("pause incorrectly applied to local rules")
+	}
+	router.setAdPreferences(nil, false)
+	if !router.ShouldBlock("login.ads.example") {
+		t.Fatal("removing an exception did not restore filtering")
+	}
+	domains, err := allowDomains("https://LOGIN.ads.example:8443/user?private=123\nlogin.ads.example.\r\n")
+	if err != nil || !slices.Equal(domains, []string{"login.ads.example"}) {
+		t.Fatal(domains, err)
+	}
+	for _, bad := range []string{"https://", "*.ads.example", "127.0.0.1", "https://user:secret@ads.example/", "bad domain", "a.example\ninvalid"} {
+		if _, err := allowDomains(bad); err == nil {
+			t.Fatalf("invalid allow entry accepted: %q", bad)
+		}
 	}
 }

@@ -30,7 +30,7 @@ func (u *desktopUI) paint(dc uintptr) {
 	}
 	rounded(dc, u.rect(22, 510, 8, 8), u.px(4), dot, dot)
 	u.text(dc, 38, 498, 140, 31, 12, 500, muted, state)
-	title := map[int]string{homePage: "连接概览", nodesPage: "我的节点", logsPage: "连接日志", prefsPage: "设置", importPage: "导入节点", manualPage: "手动添加节点", routingPage: "链式代理与去广告"}[u.page]
+	title := map[int]string{homePage: "连接概览", nodesPage: "我的节点", logsPage: "连接日志", prefsPage: "设置", importPage: "导入节点", manualPage: "手动添加节点", chainPage: "链式代理", adsPage: "去广告", domainPage: "域名检查与放行"}[u.page]
 	u.text(dc, 212, 18, 435, 51, 29, 700, fg, title)
 	switch u.page {
 	case homePage:
@@ -84,13 +84,26 @@ func (u *desktopUI) paint(dc uintptr) {
 		u.card(dc, 211, 375, 607, 85, panel)
 		u.text(dc, 233, 388, 440, 26, 17, 600, fg, "仅 TLS 传输")
 		u.text(dc, 233, 419, 445, 23, 12, 400, muted, "到节点的网页、游戏和测速流量仅走 TLS。")
-	case routingPage:
-		u.card(dc, 211, 92, 607, 154, panel)
-		u.text(dc, 230, 99, 552, 28, 15, 600, fg, "前置 CM 节点")
-		u.text(dc, 230, 214, 550, 26, 13, 400, muted, "顺序：本机 → 前置节点 → 当前出口（"+u.exitLabel+"）")
-		u.card(dc, 211, 252, 607, 223, panel)
-		u.text(dc, 230, 263, 551, 29, 15, 600, fg, "去广告域名订阅 · 每行一个 HTTPS 地址")
-		u.text(dc, 230, 432, 553, 25, 12, 400, muted, "清空并保存即可关闭订阅。已有规则每 8 小时自动更新。")
+	case chainPage:
+		u.card(dc, 211, 92, 607, 366, panel)
+		u.text(dc, 231, 106, 565, 30, 17, 600, fg, "前置 CM 节点")
+		exit := u.exitLabel
+		if exit == "" {
+			exit = "请先在「我的节点」选择出口"
+		}
+		u.text(dc, 231, 352, 565, 28, 14, 500, muted, "当前出口 · "+exit)
+	case adsPage:
+		u.card(dc, 211, 92, 607, 67, panel)
+		u.text(dc, 231, 109, 430, 35, 15, 600, fg, u.adStatus)
+		u.card(dc, 211, 174, 607, 199, panel)
+		u.text(dc, 231, 179, 565, 31, 15, 600, fg, "订阅地址 · 每行一个 HTTPS 链接")
+		u.card(dc, 211, 388, 607, 72, panel)
+		u.text(dc, 231, 401, 366, 39, 14, 500, muted, "查看匹配的规则，处理误拦截")
+	case domainPage:
+		u.card(dc, 211, 92, 607, 108, panel)
+		u.text(dc, 231, 99, 552, 31, 15, 600, fg, "输入域名或粘贴网页地址")
+		u.card(dc, 211, 212, 607, 246, panel)
+		u.text(dc, 231, 220, 565, 31, 15, 600, fg, "我的放行名单 · 每行一个域名，包含子域名")
 	case importPage:
 		u.card(dc, 211, 92, 607, 245, panel)
 		u.text(dc, 230, 107, 540, 32, 15, 500, fg, "粘贴一个节点链接，可直接复制 Debian 菜单 4 中的一整行")
@@ -122,11 +135,11 @@ func (u *desktopUI) paintButton(item *drawItem) {
 	nav := id >= navHome && id <= navPrefs
 	if nav {
 		fill, stroke, ink = side, side, muted
-		active := u.page == id-navHome+1 || (id == navPrefs && u.page == routingPage) || (id == navNodes && (u.page == manualPage || u.page == importPage))
+		active := u.page == id-navHome+1 || (id == navAds && u.page == domainPage) || (id == navNodes && (u.page == manualPage || u.page == importPage))
 		if active {
 			fill, stroke, ink = 0x18343c, 0x23484b, mint
 		}
-	} else if id == toggleAction || id == saveImport || id == saveManual || id == useNode {
+	} else if id == toggleAction || id == saveImport || id == saveManual || id == useNode || id == saveChainAction || id == saveSubsAction || id == saveAllowedAction {
 		fill, stroke, ink = mint, mint, 0x082823
 	} else if id == pingAction {
 		fill, stroke, ink = panel, panel, blue
@@ -153,7 +166,7 @@ func (u *desktopUI) paintButton(item *drawItem) {
 	fillRect(dc, r, background)
 	rounded(dc, r, u.px(8), fill, stroke)
 	if nav {
-		symbols := []string{"◉", "◇", "≡", "⚙"}
+		symbols := []string{"◉", "◇", "⇄", "⊘", "≡", "⚙"}
 		a := r
 		a.left += int32(u.px(12))
 		a.right = a.left + int32(u.px(27))

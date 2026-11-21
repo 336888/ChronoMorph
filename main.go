@@ -41,6 +41,8 @@ const (
 type Config struct {
 	ChainEntry      string   `json:"chain_entry,omitempty"`
 	AdSubscriptions []string `json:"ad_subscriptions,omitempty"`
+	AdAllowDomains  []string `json:"ad_allow_domains,omitempty"`
+	AdPaused        bool     `json:"ad_paused,omitempty"`
 	TLSNode
 	Reality       *RealityConfig `json:"reality,omitempty"`
 	Website       *WebsiteConfig `json:"website,omitempty"`
@@ -635,7 +637,7 @@ func runHeadlessClient(cfgPath string) {
 	defer cm.Close()
 	cm.startClockSync()
 
-	router := NewRouter(cfg.DirectDomains, cfg.BlockDomains)
+	router := cfg.newRouter()
 	if len(cfg.AdSubscriptions) > 0 {
 		sources, e := adSources(cfg.AdSubscriptions)
 		if e != nil {

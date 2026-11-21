@@ -9,7 +9,31 @@ import (
 	"time"
 )
 
-func (g *GUIController) applyRouting(entryID, sourcesText string) (int, error) {
+func (g *GUIController) saveChain(entryID string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	cfg := *g.cfg
+	if cfg.ChainEntry == entryID {
+		return nil
+	}
+	cfg.ChainEntry = entryID
+	if entryID != "" {
+		if _, ok := cfg.entryProfile(); !ok {
+			return fmt.Errorf("前置节点已变更，请重新选择")
+		}
+	}
+	if err := g.useConfigLocked(&cfg); err != nil {
+		return err
+	}
+	for probe := range g.probes {
+		probe.Close()
+	}
+	return nil
+}
+
+// Only subscription downloads share this mutex. Changing the chain and
+// resolving false positives remain local even when a feed is unreachable.
+func (g *GUIController) saveSubscriptions(sourcesText string) (int, error) {
 	src, err := adSources(strings.Split(sourcesText, "\n"))
 	if err != nil {
 		return 0, err
@@ -23,23 +47,40 @@ func (g *GUIController) applyRouting(entryID, sourcesText string) (int, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	cfg := *g.cfg
-	cfg.ChainEntry, cfg.AdSubscriptions = entryID, src
-	if entryID != "" {
-		if _, ok := cfg.entryProfile(); !ok {
-			return 0, fmt.Errorf("前置节点已变更，请重新选择")
-		}
-	}
-	changed := g.cfg.ChainEntry != entryID
-	if err = g.useConfigLocked(&cfg); err != nil {
+	cfg.AdSubscriptions = src
+	if err = g.installConfigLocked(&cfg, nil); err != nil {
 		return 0, err
-	}
-	if changed {
-		for probe := range g.probes {
-			probe.Close()
-		}
 	}
 	g.router.ads.Store(rules)
 	return len(rules.blocks), nil
+}
+
+func (g *GUIController) saveAllowList(text string) error {
+	domains, err := allowDomains(text)
+	if err != nil {
+		return err
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	cfg := *g.cfg
+	cfg.AdAllowDomains = domains
+	return g.saveFilterPreferencesLocked(&cfg)
+}
+
+func (g *GUIController) toggleAdPause() error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	cfg := *g.cfg
+	cfg.AdPaused = !cfg.AdPaused
+	return g.saveFilterPreferencesLocked(&cfg)
+}
+
+func (g *GUIController) saveFilterPreferencesLocked(cfg *Config) error {
+	if err := g.installConfigLocked(cfg, nil); err != nil {
+		return err
+	}
+	g.router.setAdPreferences(cfg.AdAllowDomains, cfg.AdPaused)
+	return nil
 }
 
 func (g *GUIController) startSubscriptions(stop <-chan struct{}) {

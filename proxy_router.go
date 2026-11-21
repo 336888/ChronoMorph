@@ -22,6 +22,8 @@ type Router struct {
 	mu             sync.RWMutex
 	directSuffixes []string
 	blockSuffixes  []string
+	adAllow        map[string]bool
+	adPaused       bool
 	privateNets    []*net.IPNet
 	globalMode     atomic.Bool
 }
@@ -67,9 +69,30 @@ func (r *Router) IsGlobalMode() bool {
 	return r != nil && r.globalMode.Load()
 }
 
+func (cfg *Config) newRouter() *Router {
+	r := NewRouter(cfg.DirectDomains, cfg.BlockDomains)
+	r.setAdPreferences(cfg.AdAllowDomains, cfg.AdPaused)
+	return r
+}
+func (r *Router) setAdPreferences(domains []string, paused bool) {
+	allowed := make(map[string]bool, len(domains))
+	for _, d := range domains {
+		if host, err := inputDomain(d); err == nil {
+			allowed[host] = true
+		}
+	}
+	r.mu.Lock()
+	r.adAllow, r.adPaused = allowed, paused
+	r.mu.Unlock()
+}
+
 func (r *Router) ShouldBlock(target string) bool {
+	return r.filter(target).blocked
+}
+
+func (r *Router) filter(target string) filterDecision {
 	if r == nil {
-		return false
+		return filterDecision{}
 	}
 	host, _, err := net.SplitHostPort(target)
 	if err != nil {
@@ -80,10 +103,19 @@ func (r *Router) ShouldBlock(target string) bool {
 	defer r.mu.RUnlock()
 	for _, s := range r.blockSuffixes {
 		if host == s || strings.HasSuffix(host, "."+s) {
-			return true
+			return filterDecision{true, "本地拦截规则", s, 0}
 		}
 	}
-	return r.ads.Load().blocksHost(host)
+	for suffix := host; suffix != ""; {
+		if r.adAllow[suffix] {
+			return filterDecision{false, "我的放行名单", suffix, 0}
+		}
+		_, suffix, _ = strings.Cut(suffix, ".")
+	}
+	if r.adPaused {
+		return filterDecision{false, "订阅过滤已暂停", host, 0}
+	}
+	return r.ads.Load().match(host)
 }
 
 func (r *Router) ShouldDirect(target string) bool {

@@ -93,6 +93,19 @@ func TestWindowsGUIProcess(t *testing.T) {
 	}
 	cmd := exec.Command(exe)
 	cmd.Dir = t.TempDir()
+	// A cached subscription with an offline origin reproduces a v1.4.3
+	// configuration. Saving a chain or correcting a domain must work offline.
+	src := "https://127.0.0.1:1/unreachable.txt"
+	if err := SaveConfigAtomic(filepath.Join(cmd.Dir, "client.json"), &Config{Listen: "127.0.0.1:0", AdSubscriptions: []string{src}}); err != nil {
+		t.Fatal(err)
+	}
+	cacheDir := filepath.Join(cmd.Dir, "adblock-cache")
+	if err := os.MkdirAll(cacheDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cacheDir, fmt.Sprintf("%x.txt", sha256.Sum256([]byte(src)))), []byte("ads.example\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	var childErr bytes.Buffer
 	cmd.Stderr = &childErr
 	if err := cmd.Start(); err != nil {
@@ -284,20 +297,13 @@ func TestWindowsGUIProcess(t *testing.T) {
 		var cfg Config
 		return err == nil && json.Unmarshal(data, &cfg) == nil && len(cfg.Profiles) == 2 && cfg.ServerIP == profile.ServerIP
 	})
-	click(navPrefs)
-	click(openRouting)
+	click(navChain)
 	entryList := uc("GetDlgItem", native, chainList)
 	if uc("SendMessageW", entryList, 0x18b, 0, 0) != 2 {
 		t.Fatal("expected off and one CM entry")
 	}
 	uc("SendMessageW", entryList, 0x186, 1, 0)
-	click(addAdSource)
-	subs := uc("GetDlgItem", native, subscriptionEdit)
-	if int(uc("SendMessageW", subs, 0x000e, 0, 0)) != len(defaultAdSource) {
-		t.Fatal("default domain subscription not inserted")
-	}
-	uc("SendMessageW", subs, 0x000c, 0, uintptr(unsafe.Pointer(utf(""))))
-	click(applyRouting)
+	click(saveChainAction)
 	wait("CM chain settings not persisted", func() bool {
 		data, err := os.ReadFile(filepath.Join(cmd.Dir, "client.json"))
 		var cfg Config
@@ -307,7 +313,58 @@ func TestWindowsGUIProcess(t *testing.T) {
 		entry, ok := cfg.entryProfile()
 		return ok && entry.ServerIP == realProfile.ServerIP && cfg.ServerIP == profile.ServerIP
 	})
-	t.Log("Native UI saved two distinct chain nodes and inserted the DNS subscription")
+	notice := uc("GetDlgItem", native, noticeControl)
+	wait("chain save did not finish offline", func() bool { return controlText(notice) == "链路已保存" })
+	click(navAds)
+	subs := uc("GetDlgItem", native, subscriptionEdit)
+	if controlText(subs) != src {
+		t.Fatal("chain save changed subscription")
+	}
+	click(addAdSource)
+	if uc("SendMessageW", subs, 0x000e, 0, 0) <= uintptr(len(src)) {
+		t.Fatal("preset not inserted")
+	}
+	setField := func(id int, s string) {
+		p := utf(s)
+		uc("SendMessageW", uc("GetDlgItem", native, uintptr(id)), 0x000c, 0, uintptr(unsafe.Pointer(p)))
+		runtime.KeepAlive(p)
+	}
+	setField(subscriptionEdit, src)
+	click(saveSubsAction)
+	wait("offline refresh did not report error", func() bool { return strings.Contains(controlText(notice), "下载失败") })
+	click(openDomainTools)
+	setField(domainEdit, "https://sub.ads.example/page")
+	click(checkDomainAction)
+	if got := controlText(notice); !strings.Contains(got, "订阅 1") || !strings.Contains(got, "ads.example") {
+		t.Fatal("missing matching rule", got)
+	}
+	click(addAllowedAction)
+	wait("allow list save did not finish", func() bool { return controlText(notice) == "放行名单已保存" })
+	click(checkDomainAction)
+	if got := controlText(notice); !strings.Contains(got, "我的放行名单") {
+		t.Fatal("saved exception did not take effect", got)
+	}
+	setField(allowedEdit, "")
+	click(saveAllowedAction)
+	wait("allow list removal did not complete", func() bool { return controlText(notice) == "放行名单已保存" })
+	click(navAds)
+	click(pauseAdsAction)
+	pauseButton := uc("GetDlgItem", native, pauseAdsAction)
+	wait("filter not paused", func() bool { return controlText(pauseButton) == "恢复过滤" })
+	click(openDomainTools)
+	click(checkDomainAction)
+	if got := controlText(notice); !strings.Contains(got, "订阅过滤已暂停") {
+		t.Fatal("paused filter decision incorrect", got)
+	}
+	click(navAds)
+	click(pauseAdsAction)
+	wait("filter did not resume", func() bool { return controlText(pauseButton) == "暂停过滤" })
+	data, err := os.ReadFile(filepath.Join(cmd.Dir, "client.json"))
+	var savedConfig Config
+	if err != nil || json.Unmarshal(data, &savedConfig) != nil || savedConfig.AdPaused || len(savedConfig.AdSubscriptions) != 1 || savedConfig.AdSubscriptions[0] != src || savedConfig.ChainEntry == "" || len(savedConfig.AdAllowDomains) != 0 {
+		t.Fatal("independent settings not persisted")
+	}
+	t.Log("Native chain saved offline; failed refresh retained rules; domain lookup, allow, remove, pause and resume verified")
 
 	uc("SendMessageW", native, 0x10, 0, 0)
 	if uc("IsWindowVisible", native) != 0 {

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -21,27 +22,93 @@ const defaultAdSource = "https://raw.githubusercontent.com/217heidai/adblockfilt
 const maxAdBytes = 32 << 20
 const adRefreshInterval = 8 * time.Hour
 
-type adRules struct{ blocks, exceptions map[string]bool }
+type adRules struct {
+	// Number each feed in the order shown in the subscription editor (1..12).
+	blocks, exceptions map[string]uint8
+}
 
-func (r *adRules) blocksHost(host string) bool {
-	if r == nil {
-		return false
+type filterDecision struct {
+	blocked bool
+	reason  string
+	domain  string
+	source  uint8
+}
+
+func (d filterDecision) String() string {
+	label := "放行"
+	if d.blocked {
+		label = "拦截"
 	}
-	block := false
+	if d.reason == "" {
+		return "放行 · 未命中拦截规则"
+	}
+	reason := d.reason
+	if d.source != 0 {
+		reason = fmt.Sprintf("订阅 %d · %s", d.source, reason)
+	}
+	return label + " · " + reason + " · " + d.domain
+}
+
+func (r *adRules) match(host string) filterDecision {
+	var decision filterDecision
+	if r == nil {
+		return decision
+	}
 	for {
-		if r.exceptions[host] {
-			return false
+		if src := r.exceptions[host]; src != 0 {
+			return filterDecision{false, "例外规则", host, src}
 		}
-		block = block || r.blocks[host]
+		if src := r.blocks[host]; !decision.blocked && src != 0 {
+			decision = filterDecision{true, "域名规则", host, src}
+		}
 		_, rest, more := strings.Cut(host, ".")
 		if !more {
-			return block
+			return decision
 		}
 		host = rest
 	}
 }
 
-func parseAdSource(data []byte, r *adRules) error {
+// Domain queries and allow-list entries accept URLs copied from the address bar.
+func inputDomain(input string) (string, error) {
+	value := strings.TrimSpace(input)
+	if value == "" {
+		return "", errors.New("请输入域名或网页地址")
+	}
+	if !strings.Contains(value, "://") {
+		value = "https://" + value
+	}
+	u, err := url.Parse(value)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || u.Hostname() == "" {
+		return "", errors.New("请输入有效的域名或 HTTP(S) 网页地址")
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if !validWebsiteName(host) || net.ParseIP(host) != nil {
+		return "", errors.New("请输入域名，例如 ads.example.com")
+	}
+	return host, nil
+}
+
+func allowDomains(text string) ([]string, error) {
+	var list []string
+	seen := make(map[string]bool)
+	for i, line := range strings.Split(text, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		d, err := inputDomain(line)
+		if err != nil {
+			return nil, fmt.Errorf("放行名单第 %d 行：%w", i+1, err)
+		}
+		if !seen[d] {
+			seen[d] = true
+			list = append(list, d)
+		}
+	}
+	return list, nil
+}
+
+func parseAdSource(data []byte, r *adRules, source uint8) error {
 	if len(data) > maxAdBytes {
 		return errors.New("单个订阅超过 32 MiB")
 	}
@@ -50,6 +117,7 @@ func parseAdSource(data []byte, r *adRules) error {
 		return errors.New("订阅文件不是文本域名表")
 	}
 	scan := bufio.NewScanner(bytes.NewReader(data))
+	scan.Buffer(nil, maxAdBytes+1)
 	for scan.Scan() {
 		line := strings.TrimSpace(strings.TrimPrefix(scan.Text(), "\uFEFF"))
 		if line == "" || strings.HasPrefix(line, "!") || strings.HasPrefix(line, "#") {
@@ -69,7 +137,9 @@ func parseAdSource(data []byte, r *adRules) error {
 		}
 		host := strings.ToLower(strings.TrimSuffix(line, "."))
 		if validWebsiteName(host) {
-			target[host] = true
+			if target[host] == 0 {
+				target[host] = source
+			}
 			found = true
 		}
 	}
@@ -107,7 +177,7 @@ func adSources(lines []string) ([]string, error) {
 }
 
 func loadAdRules(ctx context.Context, config string, sources []string, force bool) (*adRules, bool, error) {
-	r := &adRules{blocks: map[string]bool{}, exceptions: map[string]bool{}}
+	r := &adRules{blocks: map[string]uint8{}, exceptions: map[string]uint8{}}
 	client := http.Client{Timeout: 35 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if req.URL.Scheme != "https" || len(via) > 8 {
 			return errors.New("订阅重定向无效")
@@ -121,7 +191,7 @@ func loadAdRules(ctx context.Context, config string, sources []string, force boo
 		validCache := err == nil && info.Mode().IsRegular() && info.Size() <= maxAdBytes
 		if !force && validCache {
 			data, e := os.ReadFile(path)
-			if e == nil && parseAdSource(data, r) == nil {
+			if e == nil && parseAdSource(data, r, uint8(i+1)) == nil {
 				stale = stale || time.Since(info.ModTime()) > adRefreshInterval
 				continue
 			}
@@ -139,7 +209,7 @@ func loadAdRules(ctx context.Context, config string, sources []string, force boo
 		if e != nil || resp.StatusCode != 200 {
 			return nil, false, fmt.Errorf("订阅 %d 下载失败 (HTTP %d)", i+1, resp.StatusCode)
 		}
-		if err = parseAdSource(data, r); err != nil {
+		if err = parseAdSource(data, r, uint8(i+1)); err != nil {
 			return nil, false, fmt.Errorf("订阅 %d: %w", i+1, err)
 		}
 		if err = os.MkdirAll(filepath.Dir(path), 0700); err != nil {
