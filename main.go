@@ -147,8 +147,7 @@ func runServer(cfgPath string) {
 						failed <- err
 						return
 					}
-					tuneKCP(conn, 1150)
-					go handleServerSession(conn)
+					go handleServerSession(tunedKCP(conn))
 				}
 			}()
 			log.Printf("[Server] ChronoMorph %s UDP 监听 %s (用户数: %d)", AppVersion, rawPC.LocalAddr(), len(users))
@@ -445,9 +444,7 @@ func (cm *ClientMux) dialUDP() (net.Conn, *RTPPacketConn, error) {
 		_ = rawPC.Close()
 		return nil, nil, err
 	}
-	tuneKCP(kcpConn, 1150)
-
-	return kcpConn, rtpPC, nil
+	return tunedKCP(kcpConn), rtpPC, nil
 }
 
 func (cm *ClientMux) Reset() {
@@ -519,13 +516,6 @@ func runHeadlessClient(cfgPath string) {
 	}
 }
 
-func tuneKCP(conn *kcp.UDPSession, mtu int) {
-	conn.SetNoDelay(1, 20, 2, 1)
-	conn.SetWindowSize(256, 256)
-	conn.SetMtu(mtu)
-	conn.SetACKNoDelay(true)
-}
-
 func smuxConfig() *smux.Config {
 	cfg := smux.DefaultConfig()
 	cfg.KeepAliveInterval = 10 * time.Second
@@ -536,9 +526,12 @@ func smuxConfig() *smux.Config {
 
 func smuxTransportConfig(conn net.Conn) *smux.Config {
 	cfg := smuxConfig()
-	if c, ok := conn.(*tlsMeterConn); ok && c.muxV2 {
+	if c, ok := conn.(*tlsMeterConn); ok && (c.protocol == tlsMuxV2 || c.protocol == tlsMuxV2Ready) {
 		cfg.Version = 2
-		cfg.MaxStreamBuffer = 256 * 1024
+		// A 200 ms path at 100 Mbit/s needs about 2.5 MB in flight.
+		// Retain room for other streams when a single receiver pauses.
+		cfg.MaxStreamBuffer = 4 << 20
+		cfg.MaxReceiveBuffer = 16 << 20
 	}
 	return cfg
 }

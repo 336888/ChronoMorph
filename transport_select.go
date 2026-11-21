@@ -52,7 +52,9 @@ func (cm *ClientMux) dialPath(ctx context.Context, tcp bool) (tunnelPath, error)
 	stop := context.AfterFunc(ctx, p.close)
 	defer stop()
 	p.mode = CmdDialTCP
-	if !tcp || cm.tlsNode.UDPPort != 0 {
+	if tcp && cm.tlsNode.UDPPort != 0 && p.tcp.protocol == tlsMuxV2Ready {
+		p.mode = CmdDialReady
+	} else if !tcp || cm.tlsNode.UDPPort != 0 {
 		mode, err := negotiateDialMode(p.session)
 		if err != nil {
 			p.close()
