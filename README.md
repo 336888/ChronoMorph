@@ -2,6 +2,12 @@
 
 ChronoMorph 提供 TLS 1.3/TCP 和 UDP 两种传输。两者都支持本地 HTTP、SOCKS5 TCP 以及 SOCKS5 UDP 转发。
 
+## 游戏与并发下载
+
+v1.1.1 客户端将 SOCKS5 UDP 游戏和语音放在独立传输连接上。第一次发送 UDP 请求时才建立这条连接。同一节点上的 TCP 下载使用另一条连接。两条连接仍共享用户配额和实际链路带宽。现有 `cm://` 与 `cm+tls://` 节点可以继续使用。先升级 Debian 服务端，再退出并更新 Windows 客户端，可同时获得端口变化、快速重启和并发流控修复。
+
+ChronoMorph 借鉴 Hysteria 2 区分可靠流与应用数据报的思路。当前 UDP 应用数据仍通过 KCP 或 TLS 的可靠传输转发，丢包时本条连接仍可能等待重传。协议细节见 [Hysteria 2 官方规范](https://v2.hysteria.network/docs/developers/Protocol/)。
+
 ## UDP 受限网络
 
 1. 从本版本 Release 下载并解压对应架构的 Debian 安装包，进入目录，运行 `sudo bash cm.sh`，选 `1` 升级。

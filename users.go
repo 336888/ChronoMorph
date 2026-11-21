@@ -24,27 +24,8 @@ type UserEntry struct {
 }
 
 func (u *UserEntry) SealPacket(payload []byte) ([]byte, error) {
-	st, err := u.epochs.Get(CurrentEpoch())
-	if err != nil {
-		return nil, err
-	}
-	seq := uint16(u.seq.Add(1))
-	rtpHdr := make([]byte, RTPHeaderLen)
-	rtpHdr[0] = 0x80
-	rtpHdr[1] = serverPayloadType
-	binary.BigEndian.PutUint16(rtpHdr[2:4], seq)
-	binary.BigEndian.PutUint32(rtpHdr[4:8], uint32(CalibratedNow().UnixMilli()))
-	binary.BigEndian.PutUint32(rtpHdr[8:12], st.ssrc)
-
-	plain := make([]byte, 2+len(payload))
-	binary.BigEndian.PutUint16(plain[0:2], uint16(len(payload)))
-	copy(plain[2:], payload)
-
-	ciphertext := st.aead.Seal(nil, rtpHdr, plain, rtpHdr)
-	pkt := make([]byte, RTPHeaderLen+len(ciphertext))
-	copy(pkt[:RTPHeaderLen], rtpHdr)
-	copy(pkt[RTPHeaderLen:], ciphertext)
-	return pkt, nil
+	packet, _, err := sealPacket(u.epochs, &u.seq, serverPayloadType, payload)
+	return packet, err
 }
 
 type MultiUserEngine struct {
@@ -106,7 +87,7 @@ func (m *MultiUserEngine) OpenPacket(packet []byte) (*UserEntry, []byte, error) 
 			if err != nil || len(plain) < 2 {
 				continue
 			}
-			if !u.replay.CheckAndUpdate(ep, seq) {
+			if !u.replay.CheckAndUpdate(ep, binary.BigEndian.Uint32(rtpHdr[4:8]), seq) {
 				return nil, nil, errors.New("replay detected")
 			}
 			if u.IsOverQuota(u.LimitGB) {

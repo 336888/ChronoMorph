@@ -126,7 +126,7 @@ func runServer(cfgPath string) {
 	trafficSaved := StartTrafficPersistence(filepath.Join(filepath.Dir(cfgPath), "traffic.json"), multiEng, stopCh)
 	StartLocalStatsAPI(multiEng, guard)
 
-	rawPC, err := net.ListenPacket("udp", cfg.Listen)
+	rawPC, err := listenTunnelUDP("udp", cfg.Listen)
 	if err != nil {
 		log.Fatalf("[Server] 监听 UDP %s 失败: %v", cfg.Listen, err)
 	}
@@ -253,6 +253,7 @@ type ClientMux struct {
 	sess         *smux.Session
 	packetConn   net.PacketConn
 	packetEngine *ChronoPacketEngine
+	udpRelay     *ClientMux
 }
 
 func NewClientMux(serverIPStr, masterKeyHex string) (*ClientMux, error) {
@@ -320,12 +321,40 @@ func (cm *ClientMux) OpenStream() (*smux.Stream, error) {
 	return stream, err
 }
 
+// Give game and voice associations their own transport and congestion queue.
+// All UDP associations on a node share it, and it is created on first use.
+func (cm *ClientMux) openUDPRelayStream() (*smux.Stream, error) {
+	cm.mu.Lock()
+	if cm.closed {
+		cm.mu.Unlock()
+		return nil, net.ErrClosed
+	}
+	if cm.udpRelay == nil {
+		cm.udpRelay = &ClientMux{serverIP: cm.serverIP, tlsNode: cm.tlsNode, tlsConfig: cm.tlsConfig, packetEngine: cm.packetEngine}
+	}
+	relay := cm.udpRelay
+	cm.mu.Unlock()
+	return relay.OpenStream()
+}
+
+func listenTunnelUDP(network, addr string) (net.PacketConn, error) {
+	pc, err := net.ListenPacket(network, addr)
+	if err == nil {
+		if udp, ok := pc.(*net.UDPConn); ok {
+			const bufferSize = 4 << 20
+			_ = udp.SetReadBuffer(bufferSize)
+			_ = udp.SetWriteBuffer(bufferSize)
+		}
+	}
+	return pc, err
+}
+
 func (cm *ClientMux) dialUDP() (net.Conn, error) {
 	network := "udp4"
 	if cm.serverIP.To4() == nil {
 		network = "udp6"
 	}
-	rawPC, err := net.ListenPacket(network, ":0")
+	rawPC, err := listenTunnelUDP(network, ":0")
 	if err != nil {
 		return nil, err
 	}
@@ -347,6 +376,10 @@ func (cm *ClientMux) Reset() {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	cm.closeLocked()
+	if cm.udpRelay != nil {
+		cm.udpRelay.Close()
+		cm.udpRelay = nil
+	}
 }
 
 func (cm *ClientMux) Close() {
@@ -354,6 +387,10 @@ func (cm *ClientMux) Close() {
 	defer cm.mu.Unlock()
 	cm.closed = true
 	cm.closeLocked()
+	if cm.udpRelay != nil {
+		cm.udpRelay.Close()
+		cm.udpRelay = nil
+	}
 }
 
 func (cm *ClientMux) closeLocked() {

@@ -19,7 +19,7 @@ func handleSocks5UDPAssociate(tcpConn net.Conn, cm *ClientMux, router *Router, r
 	}
 	defer udpPC.Close()
 
-	stream, err := cm.OpenStream()
+	stream, err := cm.openUDPRelayStream()
 	if err != nil {
 		return
 	}
@@ -120,14 +120,16 @@ func writeUDPFramed(w io.Writer, target string, payload []byte) error {
 	if len(target) > 255 || len(payload) > 65535 {
 		return io.ErrShortBuffer
 	}
-	hdr := make([]byte, 1+len(target)+2)
-	hdr[0] = byte(len(target))
-	copy(hdr[1:1+len(target)], target)
-	binary.BigEndian.PutUint16(hdr[1+len(target):], uint16(len(payload)))
-	if _, err := w.Write(hdr); err != nil {
-		return err
+	headerLen := 1 + len(target) + 2
+	frame := make([]byte, headerLen+len(payload))
+	frame[0] = byte(len(target))
+	copy(frame[1:], target)
+	binary.BigEndian.PutUint16(frame[1+len(target):headerLen], uint16(len(payload)))
+	copy(frame[headerLen:], payload)
+	n, err := w.Write(frame)
+	if err == nil && n != len(frame) {
+		return io.ErrShortWrite
 	}
-	_, err := w.Write(payload)
 	return err
 }
 

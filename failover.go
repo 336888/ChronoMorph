@@ -28,7 +28,7 @@ func (g *GUIController) StartAutoFailover(stopCh <-chan struct{}) {
 					consecutiveFails = 0
 					observed = cm
 				}
-				if _, err := MeasureTunnelLatency(cm); err == nil {
+				if nodeReachable(cm) {
 					consecutiveFails = 0
 					continue
 				}
@@ -41,6 +41,21 @@ func (g *GUIController) StartAutoFailover(stopCh <-chan struct{}) {
 			}
 		}
 	}()
+}
+
+// A congested bulk connection must not evict a still-working game session.
+func nodeReachable(cm *ClientMux) bool {
+	if _, err := MeasureTunnelLatency(cm); err == nil {
+		return true
+	}
+	cm.mu.Lock()
+	relay := cm.udpRelay
+	cm.mu.Unlock()
+	if relay == nil {
+		return false
+	}
+	_, err := MeasureTunnelLatency(relay)
+	return err == nil
 }
 
 func (g *GUIController) tryStandby(stop <-chan struct{}, active *ClientMux, snapshot *Config) {
@@ -68,7 +83,7 @@ func (g *GUIController) tryStandby(stop <-chan struct{}, active *ClientMux, snap
 			continue
 		}
 		// The active node may have recovered while the other node was probed.
-		if _, err := MeasureTunnelLatency(active); err == nil {
+		if nodeReachable(active) {
 			probe.Close()
 			return
 		}

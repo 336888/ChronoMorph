@@ -2,50 +2,64 @@ package main
 
 import "sync"
 
-type ReplayWindow struct {
-	mu      sync.Mutex
-	epoch   int64
-	maxSeq  uint16
-	bitmap  uint64
-	inited  bool
+// Both the millisecond timestamp and the sequence number are authenticated.
+// A restarted sender can reuse a sequence number at a later timestamp.
+const replayMillis = 2048
+
+type sequenceGroup struct {
+	bits uint64
+	id   uint16
 }
 
-// CheckAndUpdate 64 位滑动窗口防重放校验
-func (rw *ReplayWindow) CheckAndUpdate(epoch int64, seq uint16) bool {
+type replaySlot struct {
+	stamp  int64
+	first  uint16
+	ready  bool
+	groups [4]sequenceGroup
+}
+
+type ReplayWindow struct {
+	mu     sync.Mutex
+	latest int64
+	slots  *[replayMillis]replaySlot
+}
+
+func (rw *ReplayWindow) CheckAndUpdate(epoch int64, timestamp uint32, seq uint16) bool {
+	// Use the authenticated epoch to unwrap the 32-bit millisecond clock.
+	base := epoch * EpochDurationSec * 1000
+	stamp := base + int64(int32(timestamp-uint32(base)))
 	rw.mu.Lock()
 	defer rw.mu.Unlock()
-
-	if !rw.inited || epoch > rw.epoch {
-		rw.epoch = epoch
-		rw.maxSeq = seq
-		rw.bitmap = 1
-		rw.inited = true
-		return true
+	if rw.slots == nil {
+		rw.slots = new([replayMillis]replaySlot)
+		rw.latest = stamp
 	}
-	if epoch < rw.epoch {
+	if stamp <= rw.latest-replayMillis {
 		return false
 	}
-
-	diff := int16(seq - rw.maxSeq)
-	if diff > 0 {
-		shift := uint(diff)
-		if shift >= 64 {
-			rw.bitmap = 1
-		} else {
-			rw.bitmap = (rw.bitmap << shift) | 1
-		}
-		rw.maxSeq = seq
-		return true
+	if stamp > rw.latest {
+		rw.latest = stamp
 	}
-
-	back := uint(-diff)
-	if back >= 64 {
+	slot := &rw.slots[uint64(stamp)%replayMillis]
+	if !slot.ready || slot.stamp != stamp {
+		*slot = replaySlot{stamp: stamp, first: seq, ready: true}
+	}
+	// Ordering is relative to the first sequence in this millisecond, so a
+	// uint16 rollover stays adjacent. A group replaced by a newer group can
+	// never reopen, even when a very late copy of one of its packets arrives.
+	position := int32(int16(seq-slot.first)) + 32768
+	id := uint16(position/64 + 1)
+	group := &slot.groups[id%uint16(len(slot.groups))]
+	if id < group.id {
 		return false
 	}
-	mask := uint64(1) << back
-	if rw.bitmap&mask != 0 {
+	if id > group.id {
+		*group = sequenceGroup{id: id}
+	}
+	mask := uint64(1) << (uint(position) % 64)
+	if group.bits&mask != 0 {
 		return false
 	}
-	rw.bitmap |= mask
+	group.bits |= mask
 	return true
 }

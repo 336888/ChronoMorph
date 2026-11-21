@@ -99,29 +99,30 @@ func NewChronoPacketEngine(masterKey []byte) *ChronoPacketEngine {
 }
 
 func (e *ChronoPacketEngine) SealAsRTP(payload []byte) ([]byte, int, error) {
-	epoch := CurrentEpoch()
-	st, err := e.epochs.Get(epoch)
+	return sealPacket(e.epochs, &e.seq, clientPayloadType, payload)
+}
+
+// Build directly in the caller-owned wire buffer. Seal supports exact overlap
+// between plaintext and its ciphertext output and leaves the header in place.
+func sealPacket(epochs *EpochCache, counter *atomic.Uint32, direction byte, payload []byte) ([]byte, int, error) {
+	if len(payload) > 65535 {
+		return nil, 0, errors.New("UDP payload too large")
+	}
+	now := CalibratedNow()
+	st, err := epochs.Get(now.Unix() / EpochDurationSec)
 	if err != nil {
 		return nil, 0, err
 	}
-
-	seq := uint16(e.seq.Add(1))
-	rtpHdr := make([]byte, RTPHeaderLen)
-	rtpHdr[0] = 0x80
-	rtpHdr[1] = clientPayloadType
-	binary.BigEndian.PutUint16(rtpHdr[2:4], seq)
-	binary.BigEndian.PutUint32(rtpHdr[4:8], uint32(CalibratedNow().UnixMilli()))
-	binary.BigEndian.PutUint32(rtpHdr[8:12], st.ssrc)
-
-	plain := make([]byte, 2+len(payload))
-	binary.BigEndian.PutUint16(plain[0:2], uint16(len(payload)))
+	pkt := make([]byte, RTPHeaderLen+2+len(payload), RTPHeaderLen+2+len(payload)+st.aead.Overhead())
+	header := pkt[:RTPHeaderLen]
+	header[0], header[1] = 0x80, direction
+	binary.BigEndian.PutUint16(header[2:4], uint16(counter.Add(1)))
+	binary.BigEndian.PutUint32(header[4:8], uint32(now.UnixMilli()))
+	binary.BigEndian.PutUint32(header[8:12], st.ssrc)
+	plain := pkt[RTPHeaderLen:]
+	binary.BigEndian.PutUint16(plain, uint16(len(payload)))
 	copy(plain[2:], payload)
-
-	ciphertext := st.aead.Seal(nil, rtpHdr, plain, rtpHdr)
-	pkt := make([]byte, RTPHeaderLen+len(ciphertext))
-	copy(pkt[:RTPHeaderLen], rtpHdr)
-	copy(pkt[RTPHeaderLen:], ciphertext)
-	return pkt, st.port, nil
+	return st.aead.Seal(header, header, plain, header), st.port, nil
 }
 
 func (e *ChronoPacketEngine) OpenFromRTP(packet []byte) ([]byte, error) {
@@ -146,7 +147,7 @@ func (e *ChronoPacketEngine) OpenFromRTP(packet []byte) ([]byte, error) {
 		if err != nil || len(plain) < 2 {
 			continue
 		}
-		if !e.replay.CheckAndUpdate(ep, seq) {
+		if !e.replay.CheckAndUpdate(ep, binary.BigEndian.Uint32(rtpHdr[4:8]), seq) {
 			return nil, errors.New("replay detected")
 		}
 		pLen := int(binary.BigEndian.Uint16(plain[0:2]))
