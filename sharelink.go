@@ -36,6 +36,9 @@ func (p ShareProfile) encode() (string, error) {
 }
 
 func (p ShareProfile) scheme() string {
+	if p.WebName != "" {
+		return "cm+https"
+	}
 	if p.UDPPort != 0 {
 		return "cm+auto"
 	}
@@ -48,8 +51,8 @@ func (p ShareProfile) scheme() string {
 func DecodeShareLink(link string) (*ShareProfile, error) {
 	link = strings.TrimSpace(link)
 	prefix, encoded, ok := strings.Cut(link, "://")
-	if !ok || (prefix != "cm" && prefix != "cm+tls" && prefix != "cm+auto") {
-		return nil, errors.New("请输入 cm+auto://、cm:// 或 cm+tls:// 节点链接")
+	if !ok || (prefix != "cm" && prefix != "cm+tls" && prefix != "cm+auto" && prefix != "cm+https") {
+		return nil, errors.New("请输入 cm+https://、cm+auto://、cm:// 或 cm+tls:// 节点链接")
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(encoded)
 	if err != nil {

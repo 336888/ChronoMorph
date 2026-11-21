@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
@@ -39,16 +40,17 @@ const (
 
 type Config struct {
 	TLSNode
-	TLSOnly       bool          `json:"tls_only,omitempty"`
-	TLSListen     string        `json:"tls_listen,omitempty"`
-	Listen        string        `json:"listen"`
-	ServerIP      string        `json:"server_ip,omitempty"`
-	MasterKey     string        `json:"master_key,omitempty"`
-	Users         []UserEntry   `json:"users,omitempty"`
-	Profiles      []NodeProfile `json:"profiles,omitempty"`
-	ActiveIndex   int           `json:"active_index,omitempty"`
-	DirectDomains []string      `json:"direct_domains,omitempty"`
-	BlockDomains  []string      `json:"block_domains,omitempty"`
+	Website       *WebsiteConfig `json:"website,omitempty"`
+	TLSOnly       bool           `json:"tls_only,omitempty"`
+	TLSListen     string         `json:"tls_listen,omitempty"`
+	Listen        string         `json:"listen"`
+	ServerIP      string         `json:"server_ip,omitempty"`
+	MasterKey     string         `json:"master_key,omitempty"`
+	Users         []UserEntry    `json:"users,omitempty"`
+	Profiles      []NodeProfile  `json:"profiles,omitempty"`
+	ActiveIndex   int            `json:"active_index,omitempty"`
+	DirectDomains []string       `json:"direct_domains,omitempty"`
+	BlockDomains  []string       `json:"block_domains,omitempty"`
 }
 
 func main() {
@@ -70,6 +72,17 @@ func main() {
 		}
 		if err := restoreSystemProxy(); err != nil {
 			log.Fatal(err)
+		}
+	case "website-check":
+		fs := flag.NewFlagSet("website-check", flag.ExitOnError)
+		cfgPath := fs.String("c", "/etc/chronomorph/server.json", "server configuration")
+		configOnly := fs.Bool("config-only", false, "validate the local website configuration")
+		_ = fs.Parse(os.Args[2:])
+		if err := checkWebsite(*cfgPath, *configOnly); err != nil {
+			log.Fatal(err)
+		}
+		if !*configOnly {
+			fmt.Println("HTTPS 网站首页和认证隧道均已验证")
 		}
 	case "tls-check":
 		fs := flag.NewFlagSet("tls-check", flag.ExitOnError)
@@ -144,34 +157,37 @@ func runServer(cfgPath string) {
 	StartLocalStatsAPI(multiEng, guard)
 
 	var listeners int
-	failed := make(chan error, 2)
-	rawPC, err := listenTunnelUDP("udp", cfg.Listen)
-	if err == nil {
-		ln, listenErr := kcp.ServeConn(nil, 10, 3, NewServerRTPPacketConn(rawPC, multiEng, guard))
-		if listenErr == nil {
-			defer rawPC.Close()
-			defer ln.Close()
-			listeners++
-			go func() {
-				for {
-					conn, err := ln.AcceptKCP()
-					if err != nil {
-						failed <- err
-						return
+	failed := make(chan error, 3)
+	legacy := cfg.Website == nil || !cfg.Website.Only
+	if legacy {
+		rawPC, err := listenTunnelUDP("udp", cfg.Listen)
+		if err == nil {
+			ln, listenErr := kcp.ServeConn(nil, 10, 3, NewServerRTPPacketConn(rawPC, multiEng, guard))
+			if listenErr == nil {
+				defer rawPC.Close()
+				defer ln.Close()
+				listeners++
+				go func() {
+					for {
+						conn, err := ln.AcceptKCP()
+						if err != nil {
+							failed <- err
+							return
+						}
+						go handleServerSession(tunedKCP(conn))
 					}
-					go handleServerSession(tunedKCP(conn))
-				}
-			}()
-			log.Printf("[Server] ChronoMorph %s UDP 监听 %s (用户数: %d)", AppVersion, rawPC.LocalAddr(), len(users))
-		} else {
-			_ = rawPC.Close()
-			err = listenErr
+				}()
+				log.Printf("[Server] ChronoMorph %s UDP 监听 %s (用户数: %d)", AppVersion, rawPC.LocalAddr(), len(users))
+			} else {
+				_ = rawPC.Close()
+				err = listenErr
+			}
+		}
+		if err != nil {
+			log.Printf("[UDP] 无法监听 %s: %v", cfg.Listen, err)
 		}
 	}
-	if err != nil {
-		log.Printf("[UDP] 无法监听 %s: %v", cfg.Listen, err)
-	}
-	if cfg.TLSListen != "" {
+	if legacy && cfg.TLSListen != "" {
 		cert, err := serverIdentity(filepath.Dir(cfgPath), false)
 		if err == nil {
 			var ln net.Listener
@@ -185,6 +201,22 @@ func runServer(cfgPath string) {
 		}
 		if err != nil {
 			log.Printf("[TLS] 无法启动 %s: %v", cfg.TLSListen, err)
+		}
+	}
+	if cfg.Website != nil {
+		web, err := cfg.Website.server(multiEng)
+		if err == nil {
+			var ln net.Listener
+			ln, err = net.Listen("tcp", web.Addr)
+			if err == nil {
+				listeners++
+				defer web.Close()
+				go func() { failed <- web.ServeTLS(ln, "", "") }()
+				log.Printf("[HTTPS] %s 网站入口监听 %s", cfg.Website.Name, ln.Addr())
+			}
+		}
+		if err != nil {
+			log.Printf("[HTTPS] 网站入口无法启动: %v", err)
 		}
 	}
 	if listeners == 0 {
@@ -290,6 +322,7 @@ type ClientMux struct {
 	lastFailure     string
 	lastFailureAt   time.Time
 	lastLogged      time.Time
+	webKey          ed25519.PrivateKey
 	tlsConfig       *tls.Config
 	tlsNode         TLSNode
 	closed          bool
@@ -329,7 +362,10 @@ func newNodeMux(serverIPStr, masterKeyHex string, node TLSNode) (*ClientMux, err
 		return nil, err
 	}
 	cm := &ClientMux{serverIP: ip, tlsNode: node}
-	if node.TLSPort != 0 {
+	if node.WebName != "" {
+		cm.webKey = tlsClientKey(key)
+		cm.tlsConfig = &tls.Config{ServerName: node.WebName, MinVersion: tls.VersionTLS13, NextProtos: []string{"http/1.1"}}
+	} else if node.TLSPort != 0 {
 		cm.tlsConfig, err = clientTLSConfig(key, node)
 	}
 	if node.TLSPort == 0 || node.UDPPort != 0 {
@@ -454,7 +490,7 @@ func (cm *ClientMux) openUDPRelayStream() (*smux.Stream, error) {
 		return nil, net.ErrClosed
 	}
 	if cm.udpRelay == nil {
-		cm.udpRelay = &ClientMux{serverIP: cm.serverIP, tlsNode: cm.tlsNode, tlsConfig: cm.tlsConfig, packetEngine: cm.packetEngine, preferUDP: true}
+		cm.udpRelay = &ClientMux{serverIP: cm.serverIP, tlsNode: cm.tlsNode, tlsConfig: cm.tlsConfig, webKey: cm.webKey, packetEngine: cm.packetEngine, preferUDP: true}
 	}
 	relay := cm.udpRelay
 	cm.mu.Unlock()

@@ -8,7 +8,7 @@ on:
       tag:
         description: Version tag
         required: true
-        default: v1.2.6
+        default: v1.3.0
 
 permissions:
   contents: write
@@ -75,6 +75,7 @@ jobs:
           build android arm64 chronomorph_android_arm64
           release/chronomorph-linux-amd64 version
           bash tests/debian-certificate.sh release/chronomorph-linux-amd64
+          bash tests/website-debian.sh release/chronomorph-linux-amd64
           python3 tests/tls_loopback.py release/chronomorph-linux-amd64
           python3 tests/tls_loopback.py release/chronomorph-linux-amd64 --dual --basic
           python3 tests/tls_loopback.py release/chronomorph-linux-amd64 --tls-only --dual --basic

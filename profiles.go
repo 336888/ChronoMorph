@@ -18,7 +18,7 @@ type NodeProfile struct {
 func (cfg *Config) nodeMux(ip, key string, node TLSNode) (*ClientMux, error) {
 	if cfg.TLSOnly {
 		if node.TLSPort == 0 {
-			return nil, fmt.Errorf("仅 TLS 模式需要带证书指纹的节点，请导入 cm+auto:// 或 cm+tls:// 链接")
+			return nil, fmt.Errorf("仅 TLS 模式需要 HTTPS 或带证书指纹的 TLS 节点")
 		}
 		node.UDPPort = 0
 	}

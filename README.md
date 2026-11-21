@@ -2,6 +2,17 @@
 
 ChronoMorph 提供 TLS 1.3/TCP 和 UDP 两种传输。两者都支持本地 HTTP、SOCKS5 TCP 以及 SOCKS5 UDP 转发。
 
+## 自有域名 HTTPS 网站入口
+
+v1.3.0 的 `cm+https://` 节点使用你自己域名的有效证书。普通浏览器打开网站时，入口将网页请求送到指定的本机 HTTP 网站。浏览器可协商 HTTP/2，无需出示客户端证书。ChronoMorph 客户端通过系统信任链和域名验证证书，再用现有用户密钥对本次 TLS 连接签名，建立 HTTP/1.1 CONNECT 隧道。认证信息无法在另一条 TLS 连接上重用。网站入口沿用服务端用户、流量计数和配额。TCP 和应用 UDP 均走 HTTPS/TCP，丢包时可能等待重传。
+
+1. 准备能直接指向节点的域名、与之匹配的完整证书链和私钥，以及一个本机可访问、准备公开的网站，例如 `http://127.0.0.1:8080`。网站证书的 TLS 连接必须由 ChronoMorph 直接终止。把后台管理页作为源站会将它公开。端口需要可独占，已有服务占用 443 时可先用另一个空闲 TCP 端口测试。
+2. 升级 Debian 和 Windows 到 v1.3.0。运行 `sudo cm`，选 **11 → 1**，输入域名、端口、证书链和私钥的绝对路径，以及 HTTP 源站。选 **4** 导出 HTTPS 链接并在 Windows 导入。旧客户端继续使用原节点。域名、证书与源站由你维护；续签证书后重启服务加载新证书，域名不变时原 HTTPS 链接继续有效。
+3. 在外部浏览器访问该域名与端口，确认看到自己的网页，并在新版客户端验证连接。然后可选 **11 → 2** 停用本服务旧 TCP 和 UDP 监听。处在并存模式时，同一 IP 上的旧入口仍可访问。需要恢复旧节点时选 **11 → 3**，关闭网站入口选 **11 → 4**。修改运行中的服务会短暂重启；在线验证失败时会恢复先前配置。
+4. 在服务器运行 `sudo chronomorph website-check`，可分别检查网站首页和经过认证的隧道。云安全组需要放行网站 TCP 端口。
+
+该模式使用 Go TLS 和你的真实网站。它与 VLESS/REALITY 不互通，域名、IP、握手和流量时序等仍可被观察。现有 `cm://`、`cm+tls://`、`cm+auto://` 的行为见下文。
+
 在 Windows「我的节点」中选中一行，点击「删除选中节点」。删除活动节点会断开连接，可在剩余节点中重新启动。删除只影响这台客户端。UDP 节点超时时，两端升级到 v1.1.2 后可在「连接日志」查看是 Debian 节点未响应，还是节点已响应但目标连接失败。
 
 v1.2.3 客户端支持在节点握手超时时直接断开或切换节点。网页通道等待节点应答期间，游戏和语音仍可独立建立 UDP 转发。此次升级可以沿用 v1.2.2 服务端及现有节点链接。
@@ -50,7 +61,7 @@ python3 tests/throughput.py ./chronomorph-linux-amd64 --transport tcp --rtt 200 
 
 ## 快速开始
 
-1. **推送到 GitHub 自动编译**：在 Actions 的 Release ChronoMorph 页面手动指定版本，或推送标签 `git tag v1.2.6 && git push origin v1.2.6`，在 Releases 页面下载四端产物。
+1. **推送到 GitHub 自动编译**：在 Actions 的 Release ChronoMorph 页面手动指定版本，或推送标签 `git tag v1.3.0 && git push origin v1.3.0`，在 Releases 页面下载四端产物。
 2. **Debian 服务端部署**：按菜单放行双协议节点的 TCP 和 UDP 端口，从 Release 下载 `chronomorph-debian-amd64.tar.gz`（x86_64）或 `chronomorph-debian-arm64.tar.gz`（aarch64）。解压并进入同名目录，运行 `sudo bash cm.sh`，选 1 安装或升级。离线包含服务端程序，首次安装系统依赖仍使用 apt，后续输入 `cm` 唤出管理菜单。
 3. **Windows 客户端**：双击 Release 中的 `ChronoMorph-windows-amd64.exe` 打开原生桌面窗口，在「导入节点」中粘贴分享链接。最小化或关闭窗口会收起到托盘，再次双击 EXE 或选择托盘「打开主窗口」即可恢复。退出请选择托盘「彻底退出」。如需 TUN 虚拟网卡，将 `wintun.dll` 放至同目录并以管理员运行。
 4. **Android 客户端**：提供 ARM64 命令行程序。在可执行目录准备好 `client.json` 后，运行 `chmod +x chronomorph_android_arm64 && ./chronomorph_android_arm64 client -c client.json`，默认监听 `127.0.0.1:1080`，接入 Mihomo/Clash 的 `socks5` 节点（并在规则顶部放行 VPS IP 直连）。

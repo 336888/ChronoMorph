@@ -139,6 +139,9 @@ func (cm *ClientMux) transportName() string {
 		case 1:
 			return "UDP"
 		case 2:
+			if cm.tlsNode.WebName != "" {
+				return "HTTPS"
+			}
 			return "TLS/TCP"
 		}
 	}

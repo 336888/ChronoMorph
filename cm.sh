@@ -101,7 +101,7 @@ prepare_config_dir() {
 }
 
 gen_share_link() {
-    local key="$1" name="${2:-ChronoMorph}" tls_port=${3:-0} tls_pin=${4:-} udp_port=${5:-0} ip4 ip6
+    local key="$1" name="${2:-ChronoMorph}" tls_port=${3:-0} tls_pin=${4:-} udp_port=${5:-0} web_name=${6:-} web_port=${7:-0} only=${8:-false} ip4 ip6
     if [[ -n ${CM_PUBLIC_IP:-} ]]; then
         ip4=$CM_PUBLIC_IP; ip6=$CM_PUBLIC_IP
     else
@@ -118,6 +118,10 @@ gen_share_link() {
             [[ $ip == *:* && $ip =~ ^[[:xdigit:]:.]+$ ]] || continue
         fi
         count=$((count+1))
+        if [[ -n $web_name ]]; then
+            printf '[IPv%s HTTPS] cm+https://%s\n' "$family" "$(jq -cn --arg s "$ip" --arg k "$key" --arg n "$name-HTTPS-v$family" --arg web "$web_name" --argjson port "$web_port" '{s:$s,k:$k,n:$n,web_name:$web,tls_port:$port}' | base64 -w0 | tr '+/' '-_' | tr -d '=')"
+        fi
+        if [[ $only == true ]]; then continue; fi
         if [[ $tls_port != 0 ]]; then
             printf '[IPv%s TCP + UDP] cm+auto://%s\n' "$family" "$(jq -cn --arg s "$ip" --arg k "$key" --arg n "$name-v$family" --argjson tcp "$tls_port" --argjson udp "$udp_port" --arg pin "$tls_pin" '{s:$s,k:$k,n:$n,tls_port:$tcp,udp_port:$udp,tls_pin:$pin}' | base64 -w0 | tr '+/' '-_' | tr -d '=')"
         else
@@ -150,6 +154,20 @@ check_tcp_entry() {
         sleep 0.3
     done
     return 1
+}
+
+check_service_entries() {
+    if ! jq -e '.website.only == true' "$CFG_FILE" >/dev/null; then
+        check_tcp_entry || return 1
+    fi
+    if jq -e '.website != null' "$CFG_FILE" >/dev/null; then
+        for _ in 1 2 3; do
+            if "$BIN_PATH" website-check -c "$CFG_FILE"; then return 0; fi
+            sleep 0.3
+        done
+        return 1
+    fi
+    return 0
 }
 
 do_install() (
@@ -242,7 +260,7 @@ EOF
     prepare_dual_config "$work/$name" "$work"
     chmod 755 "$work/$name"
     mv -fT -- "$work/$name" "$BIN_PATH"
-    if ! systemctl restart chronomorph || ! check_tcp_entry; then
+    if ! systemctl restart chronomorph || ! check_service_entries; then
         if [[ -f "$work/pre-dual.json" ]]; then
             install -m 600 "$work/pre-dual.json" "$CFG_DIR/.dual-config.tmp"
             mv -fT "$CFG_DIR/.dual-config.tmp" "$CFG_FILE"
@@ -272,10 +290,13 @@ show_status() {
 
 show_links() {
     if [[ ! -f "$CFG_FILE" ]]; then echo "尚未安装服务端"; return 0; fi
-    local row name key listen port=0 udp_port pin=''
+    local row name key listen port=0 udp_port pin='' web_name web_port only
+    web_name=$(jq -r '.website.name // empty' "$CFG_FILE")
+    web_port=$(jq -r '(.website.listen // ":0") | split(":") | last' "$CFG_FILE")
+    only=$(jq -r '.website.only // false' "$CFG_FILE")
     udp_port=$(jq -er '.listen | capture(":(?<port>[0-9]+)$").port | tonumber' "$CFG_FILE")
     listen=$(jq -er '.tls_listen // ""' "$CFG_FILE")
-    if [[ -n $listen ]]; then
+    if [[ $only != true && -n $listen ]]; then
         port=${listen##*:}
         pin=$("$BIN_PATH" tls-identity -dir "$CFG_DIR") || return 1
     fi
@@ -284,7 +305,7 @@ show_links() {
         name=$(jq -r '.name' <<< "$row")
         key=$(jq -r '.key' <<< "$row")
         printf '\n用户 %s\n' "$name"
-        gen_share_link "$key" "$name" "$port" "$pin" "$udp_port"
+        gen_share_link "$key" "$name" "$port" "$pin" "$udp_port" "$web_name" "$web_port" "$only"
     done < <(jq -c 'if (.users // [] | length)>0 then .users[] else {name:"default",key:.master_key} end' "$CFG_FILE")
 }
 
@@ -292,6 +313,7 @@ enable_tls() (
     set -e
     [[ -f "$CFG_FILE" && -x "$BIN_PATH" ]] || { echo '请先选 1 安装或升级服务端'; return 1; }
     local current port work pin
+    if jq -e '.website.only == true' "$CFG_FILE" >/dev/null; then echo '当前仅启用 HTTPS，先选 11 恢复并存后再调整旧入口。'; return 1; fi
     exec 9>"$DEPLOY_LOCK"
     flock -n 9 || { echo '已有部署任务在运行' >&2; return 1; }
     current=$(jq -r '.tls_listen // ""' "$CFG_FILE")
@@ -324,6 +346,7 @@ enable_tls() (
 
 migrate_tls_identity() (
     local current="$CFG_DIR/transport.pem" subject before after backup answer state active=0
+    if [[ -f "$CFG_FILE" ]] && jq -e '.website.only == true' "$CFG_FILE" >/dev/null; then echo "当前仅启用 HTTPS，网站使用你自己的证书。"; return 0; fi
     exec 9>"$DEPLOY_LOCK" || return 1
     flock -n 9 || { echo '已有部署任务在运行' >&2; return 1; }
     [[ -x "$BIN_PATH" && -f "$CFG_FILE" && -f "$current" && ! -L "$current" ]] || {
@@ -411,6 +434,68 @@ do_uninstall() {
     echo -e "${GREEN}已卸载干净。${PLAIN}"; exit 0
 }
 
+configure_website() (
+    local work action name port cert key origin answer active=0 changed=0
+    [[ -f "$CFG_FILE" ]] || { echo "请先选 1 安装或升级"; return 1; }
+    exec 9>"$DEPLOY_LOCK" || return 1
+    flock -n 9 || { echo "已有部署任务在运行" >&2; return 1; }
+    umask 077
+    work=$(mktemp -d "$CFG_DIR/.website.XXXXXXXX") || return 1
+    finish_website() {
+        local rc=$?
+        trap - EXIT HUP INT TERM
+        if ((rc != 0 && changed)); then
+            if mv -fT -- "$work/original" "$CFG_FILE"; then
+                if ((active)); then systemctl restart chronomorph || echo "请检查服务状态" >&2; fi
+                echo "网站配置验证失败，已恢复先前配置。" >&2
+            else
+                echo "无法自动恢复，请从 $work/original 恢复配置。" >&2
+                exit 1
+            fi
+        fi
+        rm -rf -- "$work"
+        exit "$rc"
+    }
+    trap finish_website EXIT
+    trap 'exit 1' HUP INT TERM
+    cp -p "$CFG_FILE" "$work/original" || return 1
+    echo "1 配置网站（与现有入口并存）  2 仅保留网站入口  3 恢复并存  4 关闭网站入口  0 返回"
+    read -rp "请选择: " action || return 1
+    case $action in
+        1)
+            read -rp "你控制的 HTTPS 域名: " name || return 1
+            read -rp "此程序独占的 TCP 端口 [443]: " port || return 1
+            port=${port:-443}
+            [[ $port =~ ^[1-9][0-9]{0,4}$ ]] && ((port <= 65535)) || { echo "端口无效"; return 1; }
+            read -rp "网站证书链 PEM 绝对路径: " cert || return 1
+            read -rp "网站私钥 PEM 绝对路径: " key || return 1
+            [[ $cert == /* && $key == /* ]] || { echo "请输入绝对路径"; return 1; }
+            read -rp "本机对外发布的网站源站 [http://127.0.0.1:8080]: " origin || return 1
+            jq --arg name "${name,,}" --arg listen ":$port" --arg cert "$cert" --arg key "$key" --arg origin "${origin:-http://127.0.0.1:8080}"               '.website={name:$name,listen:$listen,cert_file:$cert,key_file:$key,origin:$origin,only:false}' "$CFG_FILE" > "$work/new" || return 1 ;;
+        2|3)
+            jq -e '.website != null' "$CFG_FILE" >/dev/null || { echo "请先配置网站"; return 1; }
+            if [[ $action == 2 ]]; then
+                read -rp "将停用本服务的旧 TCP 和 UDP 入口。已验证新链接，继续？[y/N] " answer || return 1
+                [[ $answer == y || $answer == Y ]] || return 0
+            fi
+            jq --arg a "$action" '.website.only=($a=="2")' "$CFG_FILE" > "$work/new" || return 1 ;;
+        4) jq 'del(.website)' "$CFG_FILE" > "$work/new" || return 1 ;;
+        0) return 0 ;;
+        *) echo "选项无效"; return 1 ;;
+    esac
+    if jq -e '.website != null' "$work/new" >/dev/null; then
+        "$BIN_PATH" website-check -config-only -c "$work/new" || return 1
+    fi
+    if systemctl is-active --quiet chronomorph; then active=1; fi
+    changed=1
+    mv -fT "$work/new" "$CFG_FILE" || return 1
+    if ((active)); then
+        systemctl restart chronomorph && check_service_entries || return 1
+        echo "配置已启用，可选 4 导出链接。"
+    else
+        echo "服务当前已停止。启动后可选 4 导出链接，并运行 chronomorph website-check 验证。"
+    fi
+)
 main_menu() {
     check_root; install_shortcut
     while true; do
@@ -419,12 +504,12 @@ main_menu() {
         echo "1. 一键安装部署    2. 状态与跳频排障  3. 实时日志"
         echo "4. 导出分享链接    5. 实时流量看板    6. 热重载配置"
         echo "7. 打包备份配置    8. 彻底卸载    9. 设置双协议 TCP 端口"
-        echo "10. 迁移旧版 TLS 证书    0. 退出"
-        read -rp "请选择 [0-10]: " ch
+        echo "10. 迁移旧版 TLS 证书    11. 自有域名 HTTPS 网站入口    0. 退出"
+        read -rp "请选择 [0-11]: " ch
         case "$ch" in
             1) do_install ;; 2) show_status ;; 3) journalctl -u chronomorph -f -n 50 || true ;;
             4) show_links ;; 5) show_traffic_stats ;; 6) systemctl reload-or-restart chronomorph ;;
-            7) do_backup ;; 8) do_uninstall ;; 9) enable_tls ;; 10) migrate_tls_identity || echo "证书迁移未完成" >&2 ;; 0) exit 0 ;;
+            7) do_backup ;; 8) do_uninstall ;; 9) enable_tls ;; 10) migrate_tls_identity || echo "证书迁移未完成" >&2 ;; 11) configure_website || echo "网站操作未完成" >&2 ;; 0) exit 0 ;;
         esac
         read -rp "按回车返回..." _
     done

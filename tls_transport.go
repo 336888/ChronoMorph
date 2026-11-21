@@ -25,8 +25,9 @@ import (
 	"time"
 )
 
-// TLSNode is carried in TLS node links. Both fields are mandatory for this transport.
+// Pinned TLS and domain-verified HTTPS use mutually exclusive trust settings.
 type TLSNode struct {
+	WebName string `json:"web_name,omitempty"`
 	UDPPort int    `json:"udp_port,omitempty"` // Fixed UDP endpoint for dual-transport nodes.
 	TLSPort int    `json:"tls_port,omitempty"`
 	TLSPin  string `json:"tls_pin,omitempty"`
@@ -34,6 +35,12 @@ type TLSNode struct {
 
 func (n TLSNode) validate() error {
 	if n == (TLSNode{}) {
+		return nil
+	}
+	if n.WebName != "" {
+		if !validWebsiteName(n.WebName) || n.UDPPort != 0 || n.TLSPin != "" || n.TLSPort < 1 || n.TLSPort > 65535 {
+			return errors.New("HTTPS 节点需要有效域名、TCP 端口和独立的网站传输配置")
+		}
 		return nil
 	}
 	if n.UDPPort < 0 || n.UDPPort > 65535 {
@@ -172,6 +179,13 @@ func (cm *ClientMux) dialTLS(ctx context.Context) (net.Conn, error) {
 	conn := raw.(*tls.Conn)
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
+	if cm.tlsNode.WebName != "" {
+		stream, err := cm.websiteTunnel(conn)
+		if err != nil {
+			_ = conn.Close()
+		}
+		return stream, err
+	}
 	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	var ack [1]byte
 	_, err = io.ReadFull(conn, ack[:])
