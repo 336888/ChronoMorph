@@ -85,7 +85,7 @@ func TestTLSOnlyReconnectsOnSilentSession(t *testing.T) {
 	stream, err := dialWithRouting(origin.Addr().String(), client, nil)
 	elapsed := time.Since(start)
 	if err != nil {
-		t.Fatalf("request on silent pinned path ended after %s: %v", elapsed, err)
+		t.Fatalf("request on silent pinned path ended after %s: %v (sessions=%d, transport=%s, sessionClosed=%v)", elapsed, err, sessions.Load(), client.transportName(), client.sess == nil || client.sess.IsClosed())
 	}
 	defer stream.Close()
 	origin.SetDeadline(time.Now().Add(2 * time.Second))
