@@ -137,6 +137,16 @@ func dialWithRouting(target string, cm *ClientMux, router *Router) (io.ReadWrite
 	return stream, nil
 }
 
+// Proxy negotiation can read ahead into the first application record.
+type bufferedProxyConn struct {
+	net.Conn
+	reader *bufio.Reader
+}
+
+func (c *bufferedProxyConn) Read(b []byte) (int, error) {
+	return c.reader.Read(b)
+}
+
 func handleMixedProxy(c net.Conn, cm *ClientMux, router *Router) {
 	defer c.Close()
 	br := bufio.NewReader(c)
@@ -144,6 +154,7 @@ func handleMixedProxy(c net.Conn, cm *ClientMux, router *Router) {
 	if err != nil {
 		return
 	}
+	c = &bufferedProxyConn{Conn: c, reader: br}
 	if first[0] == 0x05 {
 		handleSocks5Mixed(c, br, cm, router)
 	} else {

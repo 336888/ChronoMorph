@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"github.com/xtaci/smux"
@@ -39,15 +40,16 @@ func handleSocks5UDPAssociate(tcpConn net.Conn, cm *ClientMux) {
 		_ = stream.Close()
 	}()
 
-	var clientUDPAddr net.Addr
+	var clientUDPAddr atomic.Pointer[net.UDPAddr]
 	go func() {
 		for {
 			target, payload, err := readUDPFramed(stream)
-			if err != nil || clientUDPAddr == nil {
+			peer := clientUDPAddr.Load()
+			if err != nil || peer == nil {
 				return
 			}
 			if pkt := packSocks5UDP(target, payload); pkt != nil {
-				_, _ = udpPC.WriteTo(pkt, clientUDPAddr)
+				_, _ = udpPC.WriteTo(pkt, peer)
 			}
 		}
 	}()
@@ -58,7 +60,7 @@ func handleSocks5UDPAssociate(tcpConn net.Conn, cm *ClientMux) {
 		if err != nil {
 			return
 		}
-		clientUDPAddr = addr
+		clientUDPAddr.Store(addr.(*net.UDPAddr))
 		target, payload, ok := unpackSocks5UDP(buf[:n])
 		if !ok {
 			continue

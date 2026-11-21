@@ -163,12 +163,12 @@ type RTPPacketConn struct {
 	peerUser  sync.Map // addr string -> *UserEntry
 }
 
-func NewClientRTPPacketConn(raw net.PacketConn, serverIP net.IP, masterKey []byte) *RTPPacketConn {
+func NewClientRTPPacketConn(raw net.PacketConn, serverIP net.IP, engine *ChronoPacketEngine) *RTPPacketConn {
 	return &RTPPacketConn{
 		raw:       raw,
 		isClient:  true,
 		serverIP:  serverIP,
-		clientEng: NewChronoPacketEngine(masterKey),
+		clientEng: engine,
 	}
 }
 

@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net"
 	"strings"
 )
 
@@ -37,6 +39,12 @@ func DecodeShareLink(link string) (*ShareProfile, error) {
 	var p ShareProfile
 	if err := json.Unmarshal(raw, &p); err != nil || p.ServerIP == "" || len(p.MasterKey) != 64 {
 		return nil, errors.New("节点参数不完整或密钥长度错误")
+	}
+	if net.ParseIP(p.ServerIP) == nil {
+		return nil, errors.New("链接中的服务器 IP 无效，请从 Debian 重新导出")
+	}
+	if _, err := hex.DecodeString(p.MasterKey); err != nil {
+		return nil, errors.New("链接中的密钥不是十六进制")
 	}
 	return &p, nil
 }

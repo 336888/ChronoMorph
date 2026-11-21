@@ -62,10 +62,19 @@ fetch_latest_from_github() {
 
 gen_share_link() {
     local key="$1" name="${2:-ChronoMorph}" ip4 ip6
-    ip4=$(curl -4 -s --max-time 4 https://ifconfig.me || true)
-    ip6=$(curl -6 -s --max-time 4 https://ifconfig.me || true)
-    [[ -n "$ip4" ]] && echo -e "${CYAN}[IPv4]${PLAIN} cm://$(printf '{"s":"%s","k":"%s","n":"%s-v4"}' "$ip4" "$key" "$name" | base64 -w0 | tr '+/' '-_' | tr -d '=')"
-    [[ -n "$ip6" ]] && echo -e "${CYAN}[IPv6]${PLAIN} cm://$(printf '{"s":"%s","k":"%s","n":"%s-v6"}' "$ip6" "$key" "$name" | base64 -w0 | tr '+/' '-_' | tr -d '=')"
+    ip4=$(curl -4 -fsS --max-time 4 https://ifconfig.me/ip 2>/dev/null || true)
+    ip6=$(curl -6 -fsS --max-time 4 https://ifconfig.me/ip 2>/dev/null || true)
+    local ip family
+    for family in 4 6; do
+        if [[ $family == 4 ]]; then
+            ip=$ip4
+            [[ $ip =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || continue
+        else
+            ip=$ip6
+            [[ $ip == *:* && $ip =~ ^[[:xdigit:]:.]+$ ]] || continue
+        fi
+        printf '[IPv%s] cm://%s\n' "$family" "$(jq -cn --arg s "$ip" --arg k "$key" --arg n "$name-v$family" '{s:$s,k:$k,n:$n}' | base64 -w0 | tr '+/' '-_' | tr -d '=')"
+    done
     return 0
 }
 
@@ -107,7 +116,8 @@ table inet chronomorph {
 EOF
     grep -q 'include "/etc/nftables.d/\*.nft"' /etc/nftables.conf || echo 'include "/etc/nftables.d/*.nft"' >> /etc/nftables.conf
     nft delete table inet chronomorph 2>/dev/null || true
-    nft -f "$NFT_FILE" && systemctl enable --now nftables
+    nft -f "$NFT_FILE"
+    systemctl enable --now nftables
     cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=ChronoMorph RTP-Mimicry Hopping Server
@@ -133,7 +143,10 @@ TasksMax=4096
 [Install]
 WantedBy=multi-user.target
 EOF
-    systemctl daemon-reload && systemctl enable --now chronomorph
+    systemctl daemon-reload
+    systemctl enable chronomorph
+    systemctl restart chronomorph
+    systemctl is-active --quiet chronomorph
     echo -e "${GREEN}部署完成！随时输入 cm 打开管理菜单。${PLAIN}"
     show_links
 }

@@ -3,11 +3,16 @@
 package main
 
 import (
+	_ "embed"
+	"log"
 	"os/exec"
 	"syscall"
 
 	"github.com/getlantern/systray"
 )
+
+//go:embed assets/tray.ico
+var trayIcon []byte
 
 func openBrowser(url string) {
 	cmd := exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
@@ -17,7 +22,7 @@ func openBrowser(url string) {
 
 func RunTray(ctrl *GUIController, onExit func()) {
 	systray.Run(func() {
-		systray.SetTitle("ChronoMorph")
+		systray.SetIcon(trayIcon)
 		systray.SetTooltip("ChronoMorph RTP-Mimicry Tunnel")
 
 		mOpen := systray.AddMenuItem("打开控制面板", "打开 ChronoMorph Web 面板")
@@ -40,7 +45,10 @@ func RunTray(ctrl *GUIController, onExit func()) {
 					if running {
 						ctrl.StopTunnel()
 					} else {
-						_ = ctrl.StartTunnel()
+						if err := ctrl.StartTunnel(); err != nil {
+							log.Printf("[GUI] 启动本地代理失败: %v", err)
+							openBrowser("http://127.0.0.1:18080")
+						}
 					}
 				case <-mMode.ClickedCh:
 					ctrl.router.SetGlobalMode(!ctrl.router.IsGlobalMode())

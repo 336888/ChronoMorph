@@ -5,13 +5,16 @@ package main
 import (
 	"fmt"
 	"log"
+	"net"
 	"os/exec"
+
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/xjasonlyu/tun2socks/v2/engine"
+	"golang.org/x/sys/windows"
 )
 
 const (
@@ -27,20 +30,38 @@ type TUNManager struct {
 	active   bool
 	serverIP string
 	origGW   string
+	dns      net.PacketConn
 }
 
 var GlobalTUN = &TUNManager{}
 
-func (t *TUNManager) StartTUN(proxyAddr, serverIP string) error {
+func (t *TUNManager) StartTUN(proxyAddr, serverIP string, cm *ClientMux) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.active {
 		return nil
 	}
+	if !IsAdmin() {
+		return fmt.Errorf("请以管理员身份运行客户端后再启用 TUN")
+	}
+	dll, err := windows.LoadLibraryEx("wintun.dll", 0, windows.LOAD_LIBRARY_SEARCH_APPLICATION_DIR|windows.LOAD_LIBRARY_SEARCH_SYSTEM32)
+	if err != nil {
+		return fmt.Errorf("无法加载 64 位 wintun.dll，请将它放在 EXE 同一目录: %w", err)
+	}
+	defer windows.FreeLibrary(dll)
 	gw, err := getDefaultGateway()
 	if err != nil || gw == "" {
 		return fmt.Errorf("获取物理默认网关失败: %v", err)
 	}
+	dns, err := StartSecureDNSProxy(net.JoinHostPort(tunDNS, "53"), cm)
+	if err != nil {
+		return fmt.Errorf("本地 DNS 监听失败: %w", err)
+	}
+	defer func() {
+		if !t.active {
+			_ = dns.Close()
+		}
+	}()
 	t.origGW = gw
 	t.serverIP = serverIP
 
@@ -59,11 +80,15 @@ func (t *TUNManager) StartTUN(proxyAddr, serverIP string) error {
 		engine.Stop()
 		return fmt.Errorf("配置虚拟网卡失败（需管理员权限）: %v", err)
 	}
-	_ = runHiddenCmd("netsh", "interface", "ip", "set", "dns", "name="+tunName, "static", tunDNS)
+	if err := runHiddenCmd("netsh", "interface", "ip", "set", "dns", "name="+tunName, "static", tunDNS, "validate=no"); err != nil {
+		engine.Stop()
+		return fmt.Errorf("配置 TUN DNS 失败: %w", err)
+	}
 	_ = runHiddenCmd("route", "add", serverIP, "mask", "255.255.255.255", gw, "metric", "5")
 	_ = runHiddenCmd("route", "add", "0.0.0.0", "mask", "128.0.0.0", tunGateway, "metric", "5")
 	_ = runHiddenCmd("route", "add", "128.0.0.0", "mask", "128.0.0.0", tunGateway, "metric", "5")
 
+	t.dns = dns
 	t.active = true
 	log.Printf("[TUN] 虚拟网卡已接管全局流量 (VPS %s 已绕过直连网关 %s)", serverIP, gw)
 	return nil
@@ -81,6 +106,8 @@ func (t *TUNManager) StopTUN() {
 		_ = runHiddenCmd("route", "delete", t.serverIP)
 	}
 	engine.Stop()
+	_ = t.dns.Close()
+	t.dns = nil
 	t.active = false
 	log.Println("[TUN] 虚拟网卡已关闭，系统路由已还原")
 }

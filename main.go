@@ -21,8 +21,9 @@ import (
 )
 
 const (
-	CmdTCP byte = 0x01
-	CmdUDP byte = 0x02
+	CmdTCP  byte = 0x01
+	CmdUDP  byte = 0x02
+	CmdPing byte = 0x03
 )
 
 type Config struct {
@@ -157,6 +158,10 @@ func handleServerStream(stream *smux.Stream) {
 	if _, err := io.ReadFull(stream, cmd[:]); err != nil {
 		return
 	}
+	if cmd[0] == CmdPing {
+		_, _ = stream.Write([]byte{CmdPing})
+		return
+	}
 	if cmd[0] == CmdUDP {
 		handleServerUDPStream(stream)
 		return
@@ -184,10 +189,11 @@ func handleServerStream(stream *smux.Stream) {
 }
 
 type ClientMux struct {
-	mu        sync.Mutex
-	serverIP  net.IP
-	masterKey []byte
-	sess      *smux.Session
+	mu           sync.Mutex
+	serverIP     net.IP
+	sess         *smux.Session
+	packetConn   net.PacketConn
+	packetEngine *ChronoPacketEngine
 }
 
 func NewClientMux(serverIPStr, masterKeyHex string) (*ClientMux, error) {
@@ -199,19 +205,20 @@ func NewClientMux(serverIPStr, masterKeyHex string) (*ClientMux, error) {
 	if err != nil || len(key) != 32 {
 		return nil, fmt.Errorf("MasterKey 必须是 64 位 Hex 字符串")
 	}
-	return &ClientMux{serverIP: ip, masterKey: key}, nil
+	return &ClientMux{serverIP: ip, packetEngine: NewChronoPacketEngine(key)}, nil
 }
 
 func (cm *ClientMux) OpenStream() (*smux.Stream, error) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
-	if cm.sess != nil && !cm.sess.IsClosed() {
-		if s, err := cm.sess.OpenStream(); err == nil {
-			return s, nil
+	if cm.sess != nil {
+		if !cm.sess.IsClosed() {
+			if stream, err := cm.sess.OpenStream(); err == nil {
+				return stream, nil
+			}
 		}
-		_ = cm.sess.Close()
-		cm.sess = nil
+		cm.closeLocked()
 	}
 
 	network := "udp4"
@@ -223,28 +230,41 @@ func (cm *ClientMux) OpenStream() (*smux.Stream, error) {
 		return nil, err
 	}
 
-	mtu := ProbeOptimalMTU(cm.serverIP, cm.masterKey)
-	rtpPC := NewClientRTPPacketConn(rawPC, cm.serverIP, cm.masterKey)
+	rtpPC := NewClientRTPPacketConn(rawPC, cm.serverIP, cm.packetEngine)
 
 	kcpConn, err := kcp.NewConn2(&net.UDPAddr{IP: cm.serverIP, Port: PortMin}, nil, 10, 3, rtpPC)
 	if err != nil {
 		_ = rawPC.Close()
 		return nil, err
 	}
-	tuneKCP(kcpConn, mtu)
+	tuneKCP(kcpConn, 1150)
 
 	sess, err := smux.Client(kcpConn, smuxConfig())
 	if err != nil {
 		_ = kcpConn.Close()
+		_ = rawPC.Close()
 		return nil, err
 	}
 	cm.sess = sess
-	return sess.OpenStream()
+	cm.packetConn = rawPC
+	stream, err := sess.OpenStream()
+	if err != nil {
+		cm.closeLocked()
+	}
+	return stream, err
 }
 
 func (cm *ClientMux) Close() {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
+	cm.closeLocked()
+}
+
+func (cm *ClientMux) closeLocked() {
+	if cm.packetConn != nil {
+		_ = cm.packetConn.Close()
+		cm.packetConn = nil
+	}
 	if cm.sess != nil {
 		_ = cm.sess.Close()
 		cm.sess = nil

@@ -4,12 +4,16 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"golang.org/x/sys/windows"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 type GUIController struct {
@@ -79,7 +83,58 @@ func (g *GUIController) StopTunnel() {
 	log.Println("[GUI] 加密隧道已断开")
 }
 
+func (g *GUIController) importProfile(p *ShareProfile) error {
+	g.mu.Lock()
+	cfg := *g.cfg
+	cfg.ServerIP, cfg.MasterKey = p.ServerIP, p.MasterKey
+	cfg.Profiles = append([]NodeProfile(nil), cfg.Profiles...)
+	idx := len(cfg.Profiles)
+	for i, node := range cfg.Profiles {
+		if node.ServerIP == p.ServerIP && node.MasterKey == p.MasterKey {
+			idx = i
+			break
+		}
+	}
+	node := NodeProfile{Name: p.Name, ServerIP: p.ServerIP, MasterKey: p.MasterKey}
+	if idx == len(cfg.Profiles) {
+		cfg.Profiles = append(cfg.Profiles, node)
+	} else {
+		cfg.Profiles[idx] = node
+	}
+	cfg.ActiveIndex = idx
+	if err := SaveConfigAtomic(g.cfgPath, &cfg); err != nil {
+		g.mu.Unlock()
+		return fmt.Errorf("保存客户端配置失败: %w", err)
+	}
+	restart := g.running && (g.cfg.ServerIP != p.ServerIP || g.cfg.MasterKey != p.MasterKey)
+	g.cfg = &cfg
+	g.mu.Unlock()
+	if restart {
+		g.StopTunnel()
+		return g.StartTunnel()
+	}
+	return nil
+}
+
 func RunWindowsGUI(cfgPath string) {
+	const panelURL = "http://127.0.0.1:18080"
+	ln, err := net.Listen("tcp4", "127.0.0.1:18080")
+	if err != nil {
+		client := &http.Client{Timeout: time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+		// v1.0.0 has no health endpoint. Its panel title also identifies a running instance.
+		if res, getErr := client.Get(panelURL); getErr == nil {
+			body, _ := io.ReadAll(io.LimitReader(res.Body, 16384))
+			_ = res.Body.Close()
+			if res.StatusCode == http.StatusOK && strings.Contains(string(body), "<title>ChronoMorph</title>") {
+				openBrowser(panelURL)
+				return
+			}
+		}
+		message, _ := windows.UTF16PtrFromString(fmt.Sprintf("控制面板无法监听 127.0.0.1:18080，请关闭占用该端口的程序后重试。\n%v", err))
+		caption, _ := windows.UTF16PtrFromString("ChronoMorph")
+		_, _ = windows.MessageBox(0, message, caption, windows.MB_ICONERROR)
+		return
+	}
 	log.SetOutput(AppLogs)
 	cfg := &Config{Listen: "127.0.0.1:1080"}
 	if b, err := os.ReadFile(cfgPath); err == nil {
@@ -199,13 +254,13 @@ func RunWindowsGUI(cfgPath string) {
 			return
 		}
 		ctrl.mu.Lock()
-		running, listen, ip := ctrl.running, ctrl.cfg.Listen, ctrl.cfg.ServerIP
+		running, listen, ip, cm := ctrl.running, ctrl.cfg.Listen, ctrl.cfg.ServerIP, ctrl.cm
 		ctrl.mu.Unlock()
 		if !running {
 			http.Error(w, "请先启动加密隧道", 400)
 			return
 		}
-		if err := GlobalTUN.StartTUN(listen, ip); err != nil {
+		if err := GlobalTUN.StartTUN(listen, ip, cm); err != nil {
 			http.Error(w, err.Error(), 500)
 			return
 		}
@@ -229,7 +284,9 @@ func RunWindowsGUI(cfgPath string) {
 	})
 
 	mux.HandleFunc("/api/import", func(w http.ResponseWriter, r *http.Request) {
-		var req struct{ Link string `json:"link"` }
+		var req struct {
+			Link string `json:"link"`
+		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "格式错误", 400)
 			return
@@ -239,13 +296,10 @@ func RunWindowsGUI(cfgPath string) {
 			http.Error(w, err.Error(), 400)
 			return
 		}
-		ctrl.mu.Lock()
-		ctrl.cfg.ServerIP = p.ServerIP
-		ctrl.cfg.MasterKey = p.MasterKey
-		ctrl.cfg.Profiles = append(ctrl.cfg.Profiles, NodeProfile{Name: p.Name, ServerIP: p.ServerIP, MasterKey: p.MasterKey})
-		ctrl.cfg.ActiveIndex = len(ctrl.cfg.Profiles) - 1
-		_ = SaveConfigAtomic(ctrl.cfgPath, ctrl.cfg)
-		ctrl.mu.Unlock()
+		if err := ctrl.importProfile(p); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		w.WriteHeader(200)
 	})
 
@@ -275,17 +329,14 @@ func RunWindowsGUI(cfgPath string) {
 		_ = json.NewEncoder(w).Encode(CheckLatestRelease())
 	})
 
-	ln, err := net.Listen("tcp", "127.0.0.1:18080")
-	if err != nil {
-		openBrowser("http://127.0.0.1:18080")
-		return
-	}
 	go func() {
 		_ = http.Serve(ln, ProtectLocalAPI(mux))
 	}()
 
 	if cfg.ServerIP != "" && len(cfg.MasterKey) == 64 {
-		_ = ctrl.StartTunnel()
+		if err := ctrl.StartTunnel(); err != nil {
+			log.Printf("[GUI] 启动本地代理失败: %v", err)
+		}
 	}
 	openBrowser("http://127.0.0.1:18080")
 
@@ -345,7 +396,7 @@ const guiHTML = `<!DOCTYPE html>
   <div class="row"><span>TUN 虚拟网卡 (需管理员)</span><button id="tunBtn" class="pill" onclick="post('/api/tun')">未开启</button></div>
   <div class="row"><span>开机自启</span><button id="autoBtn" class="pill" onclick="post('/api/autostart')">已关闭</button></div>
   <div class="row">
-    <span>真连接延迟: <b id="pingVal">-- ms</b></span>
+    <span>服务端延迟: <b id="pingVal">-- ms</b></span>
     <div>
       <button class="pill" onclick="testPing()">测速</button>
       <button class="pill" onclick="importLink()">导入</button>
@@ -356,18 +407,26 @@ const guiHTML = `<!DOCTYPE html>
 </div>
 <script>
 const H = { 'X-CM-Token': '{{TOKEN}}' };
-async function post(url) { await fetch(url, { method: 'POST', headers: H }); refresh(); }
+let editingConfig = false;
+for (const input of document.querySelectorAll('input')) {
+  input.addEventListener('input', () => { editingConfig = true; });
+}
+async function post(url) {
+  const res = await fetch(url, { method: 'POST', headers: H });
+  document.getElementById('err').textContent = res.ok ? '' : await res.text();
+  refresh();
+}
 async function refresh() {
   try {
     const d = await (await fetch('/api/status', { headers: H })).json();
     document.getElementById('ver').textContent = d.version || '';
-    if (!document.activeElement || document.activeElement.tagName !== 'INPUT') {
+    if (!editingConfig) {
       document.getElementById('server_ip').value = d.server_ip || '';
       document.getElementById('master_key').value = d.master_key || '';
       document.getElementById('listen').value = d.listen || '127.0.0.1:1080';
     }
     const badge = document.getElementById('badge'), btn = document.getElementById('toggleBtn');
-    badge.textContent = d.running ? '运行中' : '已断开';
+    badge.textContent = d.running ? '本地代理已启动' : '已断开';
     badge.className = 'badge' + (d.running ? ' on' : '');
     btn.textContent = d.running ? '断开隧道' : '启动加密隧道';
     btn.className = 'btn ' + (d.running ? 'btn-stop' : 'btn-start');
@@ -390,18 +449,21 @@ async function toggleTunnel() {
   document.getElementById('err').textContent = '';
   const body = { server_ip: document.getElementById('server_ip').value.trim(), master_key: document.getElementById('master_key').value.trim(), listen: document.getElementById('listen').value.trim() };
   const res = await fetch('/api/toggle', { method: 'POST', headers: H, body: JSON.stringify(body) });
-  if (!res.ok) document.getElementById('err').textContent = await res.text();
+  if (res.ok) editingConfig = false;
+  else document.getElementById('err').textContent = await res.text();
   refresh();
 }
 async function testPing() {
   document.getElementById('pingVal').textContent = '测速中...';
   const res = await fetch('/api/ping', { headers: H });
-  document.getElementById('pingVal').textContent = res.ok ? ((await res.json()).ms + ' ms') : '超时';
+  document.getElementById('pingVal').textContent = res.ok ? ((await res.json()).ms + ' ms') : '失败';
+  document.getElementById('err').textContent = res.ok ? '' : await res.text();
 }
 async function importLink() {
   const link = prompt('粘贴服务端生成的 cm:// 链接：');
   if (!link) return;
   const res = await fetch('/api/import', { method: 'POST', headers: H, body: JSON.stringify({ link: link.trim() }) });
+  if (res.ok) editingConfig = false;
   document.getElementById('err').textContent = res.ok ? '导入成功' : await res.text();
   refresh();
 }
