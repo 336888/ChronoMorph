@@ -271,7 +271,7 @@ func (c *RTPPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 	}
 	_, err = c.raw.WriteTo(pkt, dst)
 	if err == nil {
-		u.txByte.Add(uint64(len(pkt)))
+		u.traffic.add(0, uint64(len(pkt)))
 	}
 	return len(p), err
 }

@@ -526,7 +526,20 @@ migrate_tls_identity() (
 )
 
 show_traffic_stats() {
-    curl -s --max-time 2 http://127.0.0.1:40001/stats | jq . || echo -e "${RED}服务未运行${PLAIN}"
+    local stats
+    if ! stats=$(curl -fsS --max-time 2 http://127.0.0.1:40001/stats); then
+        echo -e "${RED}无法读取本机统计，请用菜单 2 查看服务状态。${PLAIN}" >&2
+        return 0
+    fi
+    jq -er '
+        def metric($v): $v // "—";
+        def mib: (. * 100 | round) / 100;
+        "统计月份  \(metric(.month))    运行时间  \(.uptime_sec | floor) 秒    封禁 IP  \(.banned_ips)",
+        "并发流    \(metric(.active_streams))/\(metric(.stream_limit))    达上限拒绝  \(metric(.rejected_streams))",
+        "请求头超时  \(metric(.header_timeouts))    半关闭空闲超时  \(metric(.half_close_timeouts))",
+        "用户  /  接收 MiB  /  发送 MiB",
+        ((.users // [])[] | "\(.name | @json)  /  \(.rx_mb | mib)  /  \(.tx_mb | mib)")
+    ' <<< "$stats" || echo -e "${RED}本机统计响应格式异常。${PLAIN}" >&2
 }
 
 do_backup() {

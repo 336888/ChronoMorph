@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -297,7 +298,7 @@ func handleServerSession(conn net.Conn) {
 	}
 }
 
-func handleServerStream(stream *smux.Stream) {
+func handleServerStream(stream net.Conn) {
 	if !serverLimiter.Acquire() {
 		_ = stream.Close()
 		return
@@ -305,46 +306,43 @@ func handleServerStream(stream *smux.Stream) {
 	defer serverLimiter.Release()
 	defer stream.Close()
 
-	var cmd [1]byte
-	if _, err := io.ReadFull(stream, cmd[:]); err != nil {
+	cmd, target, err := readServerRequest(stream, 10*time.Second)
+	if err != nil {
+		var timeout net.Error
+		if errors.As(err, &timeout) && timeout.Timeout() {
+			serverLimiter.headerTimeouts.Add(1)
+		}
 		return
 	}
-	if cmd[0] == CmdCapabilities {
+	switch cmd {
+	case CmdCapabilities:
+		stream.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		_, _ = stream.Write([]byte{CmdCapabilities, capDialAck | capDialProgress})
 		return
-	}
-	if cmd[0] == cmdQualityDownload {
+	case cmdQualityDownload:
 		serveQualityBlock(stream)
 		return
-	}
-	if cmd[0] == CmdPing {
+	case CmdPing:
+		stream.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		_, _ = stream.Write([]byte{CmdPing})
 		return
-	}
-	if cmd[0] == CmdUDP {
+	case CmdUDP:
 		handleServerUDPStream(stream)
 		return
-	}
-	ack := cmd[0] == CmdDialTCP || cmd[0] == CmdDialReady
-	if cmd[0] != CmdTCP && !ack {
+	case CmdTCP, CmdDialTCP, CmdDialReady:
+	default:
 		return
 	}
-
-	var lenBuf [1]byte
-	if _, err := io.ReadFull(stream, lenBuf[:]); err != nil {
-		return
+	ack := cmd != CmdTCP
+	if ack {
+		stream.SetWriteDeadline(time.Now().Add(15 * time.Second))
 	}
-	addrBuf := make([]byte, lenBuf[0])
-	if _, err := io.ReadFull(stream, addrBuf); err != nil {
-		return
-	}
-
-	if cmd[0] == CmdDialReady {
+	if cmd == CmdDialReady {
 		if _, err := stream.Write([]byte{CmdDialReady}); err != nil {
 			return
 		}
 	}
-	targetConn, err := net.DialTimeout("tcp", string(addrBuf), 8*time.Second)
+	targetConn, err := net.DialTimeout("tcp", target, 8*time.Second)
 	if err != nil {
 		if ack {
 			_, _ = stream.Write([]byte{1})
@@ -356,9 +354,33 @@ func handleServerStream(stream *smux.Stream) {
 		if _, err := stream.Write([]byte{0}); err != nil {
 			return
 		}
+		stream.SetWriteDeadline(time.Time{})
 	}
 
-	pipeBidirectional(stream, targetConn)
+	if relayBidirectional(stream, targetConn, 2*time.Minute) {
+		serverLimiter.drainTimeouts.Add(1)
+	}
+}
+
+// One deadline covers the entire header, including a partially sent target.
+func readServerRequest(conn net.Conn, timeout time.Duration) (byte, string, error) {
+	conn.SetReadDeadline(time.Now().Add(timeout))
+	defer conn.SetReadDeadline(time.Time{})
+	var cmd, size [1]byte
+	if _, err := io.ReadFull(conn, cmd[:]); err != nil {
+		return 0, "", err
+	}
+	switch cmd[0] {
+	case CmdTCP, CmdDialTCP, CmdDialReady:
+		if _, err := io.ReadFull(conn, size[:]); err != nil {
+			return 0, "", err
+		}
+		addr := make([]byte, size[0])
+		_, err := io.ReadFull(conn, addr)
+		return cmd[0], string(addr), err
+	default:
+		return cmd[0], "", nil
+	}
 }
 
 type ClientMux struct {
@@ -721,21 +743,77 @@ func closeWrite(dst io.Closer) error {
 }
 
 func pipeBidirectional(a, b io.ReadWriteCloser) {
-	var stop sync.Once
-	abort := func() { stop.Do(func() { _ = a.Close(); _ = b.Close() }) }
-	var wg sync.WaitGroup
-	wg.Add(2)
+	relayBidirectional(a, b, 0)
+}
+
+type relayProgressWriter struct {
+	io.Writer
+	start time.Time
+	last  *atomic.Int64
+}
+
+func (w relayProgressWriter) Write(p []byte) (int, error) {
+	n, err := w.Writer.Write(p)
+	if n > 0 && w.last.Load() >= 0 {
+		w.last.Store(int64(time.Since(w.start)))
+	}
+	return n, err
+}
+
+// After one clean EOF, let the reverse direction finish while it makes
+// progress. A zero drainIdle retains the unrestricted client-side behavior.
+func relayBidirectional(a, b io.ReadWriteCloser, drainIdle time.Duration) bool {
+	start := time.Now()
+	var last atomic.Int64
+	last.Store(-1)
+	done := make(chan error, 2)
 	copyTo := func(dst, src io.ReadWriteCloser) {
-		defer wg.Done()
-		if _, err := io.Copy(dst, src); err != nil {
-			abort()
-			return
+		var w io.Writer = dst
+		if drainIdle > 0 {
+			w = relayProgressWriter{dst, start, &last}
 		}
-		if err := closeWrite(dst); err != nil {
-			abort()
+		_, err := io.Copy(w, src)
+		if err == nil {
+			err = closeWrite(dst)
 		}
+		done <- err
 	}
 	go copyTo(a, b)
 	go copyTo(b, a)
-	wg.Wait()
+	closeBoth := func() {
+		_ = a.Close()
+		_ = b.Close()
+	}
+	if err := <-done; err != nil {
+		closeBoth()
+		<-done
+		return false
+	}
+
+	var timer *time.Timer
+	var deadline <-chan time.Time
+	if drainIdle > 0 {
+		last.Store(int64(time.Since(start)))
+		timer = time.NewTimer(drainIdle)
+		defer timer.Stop()
+		deadline = timer.C
+	}
+	for {
+		select {
+		case err := <-done:
+			if err != nil {
+				closeBoth()
+			}
+			return false
+		case <-deadline:
+			remaining := drainIdle - (time.Since(start) - time.Duration(last.Load()))
+			if remaining > 0 {
+				timer.Reset(remaining)
+				continue
+			}
+			closeBoth()
+			<-done
+			return true
+		}
+	}
 }

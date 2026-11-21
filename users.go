@@ -19,8 +19,7 @@ type UserEntry struct {
 	replay    ReplayWindow
 	retired   atomic.Bool
 	seq       atomic.Uint32
-	rxByte    atomic.Uint64
-	txByte    atomic.Uint64
+	traffic   monthlyTraffic
 }
 
 func (u *UserEntry) SealPacket(payload []byte) ([]byte, error) {
@@ -97,7 +96,7 @@ func (m *MultiUserEngine) OpenPacket(packet []byte) (*UserEntry, []byte, error) 
 			if 2+pLen > len(plain) {
 				return nil, nil, errors.New("corrupt length")
 			}
-			u.rxByte.Add(uint64(len(packet)))
+			u.traffic.add(uint64(len(packet)), 0)
 			return u, plain[2 : 2+pLen], nil
 		}
 	}

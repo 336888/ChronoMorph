@@ -143,3 +143,13 @@ if bash -c 'source "$1/standalone.sh"; is_local_package "$2"' _ "$trusted" "$nam
 chmod 777 "$trusted"
 if bash -c 'source "$1/cm.sh"; is_local_package "$2"' _ "$trusted" "$name"; then exit 1; fi
 echo 'PASS standalone and shared-directory installs ignore adjacent executable files'
+
+# Mixed-version upgrades can briefly expose the older stats response.
+curl() { printf '%s\n' "$stats_fixture"; }
+stats_fixture='{"uptime_sec":7,"banned_ips":0,"users":null}'
+output=$(show_traffic_stats)
+[[ $output == *"—/—"* && $output == *"7 秒"* ]]
+stats_fixture='{"month":"2026-12","uptime_sec":60,"banned_ips":0,"active_streams":3,"stream_limit":512,"rejected_streams":4,"header_timeouts":2,"half_close_timeouts":1,"users":[{"name":"user","rx_mb":1.125,"tx_mb":2}]}'
+output=$(show_traffic_stats)
+[[ $output == *"3/512"* && $output == *"2026-12"* && $output == *"1.13  /  2"* ]]
+echo 'PASS Debian dashboard renders current and legacy stats'

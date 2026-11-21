@@ -6,8 +6,7 @@ import (
 	"io"
 	"net"
 	"sync/atomic"
-
-	"github.com/xtaci/smux"
+	"time"
 )
 
 func handleSocks5UDPAssociate(tcpConn net.Conn, cm *ClientMux, router *Router, requestedPort int) {
@@ -112,7 +111,44 @@ func handleSocks5UDPAssociate(tcpConn net.Conn, cm *ClientMux, router *Router, r
 	}
 }
 
-func handleServerUDPStream(stream *smux.Stream) {
+const udpCacheEntries = 64
+const udpCacheLifetime = time.Minute
+
+type udpCacheEntry struct {
+	addr    *net.UDPAddr
+	expires time.Time
+}
+
+// A single stream reads targets serially. Bound its own recent destinations
+// so one client's DNS churn cannot evict another client's records.
+type udpTargetCache struct {
+	entries map[string]udpCacheEntry
+	order   [udpCacheEntries]string
+	next    int
+}
+
+func (c *udpTargetCache) resolve(target string, now time.Time, lookup func(string, string) (*net.UDPAddr, error)) (*net.UDPAddr, error) {
+	entry, found := c.entries[target]
+	if found && now.Before(entry.expires) {
+		return entry.addr, nil
+	}
+	addr, err := lookup("udp", target)
+	if err != nil {
+		return nil, err
+	}
+	if c.entries == nil {
+		c.entries = make(map[string]udpCacheEntry)
+	}
+	if !found {
+		delete(c.entries, c.order[c.next])
+		c.order[c.next] = target
+		c.next = (c.next + 1) % udpCacheEntries
+	}
+	c.entries[target] = udpCacheEntry{addr: addr, expires: now.Add(udpCacheLifetime)}
+	return addr, nil
+}
+
+func handleServerUDPStream(stream net.Conn) {
 	defer stream.Close()
 	pc, err := net.ListenPacket("udp", ":0")
 	if err != nil {
@@ -134,12 +170,13 @@ func handleServerUDPStream(stream *smux.Stream) {
 		}
 	}()
 
+	var targets udpTargetCache
 	for {
 		target, payload, err := readUDPFramed(stream)
 		if err != nil {
 			return
 		}
-		raddr, err := net.ResolveUDPAddr("udp", target)
+		raddr, err := targets.resolve(target, time.Now(), net.ResolveUDPAddr)
 		if err != nil {
 			continue
 		}

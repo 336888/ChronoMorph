@@ -214,7 +214,7 @@ func TestWindowsGUIProcess(t *testing.T) {
 	click(toggleAction)
 	wait("native start did not enable the local listener", func() bool { return controlText(toggle) == "断开连接" })
 	click(pingAction)
-	wait("native ping did not reach the authenticated server", func() bool { return users.users[0].txByte.Load() > 0 })
+	wait("native ping did not reach the authenticated server", func() bool { return users.users[0].traffic.totals(trafficMonth(time.Now()))[1] > 0 })
 	if path := os.Getenv("CHRONOMORPH_PREVIEW"); path != "" {
 		time.Sleep(250 * time.Millisecond)
 		if err := captureDesktopWindow(native, path); err != nil {
