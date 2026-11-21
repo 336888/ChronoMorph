@@ -1,4 +1,4 @@
-module chronomorph
+module slacker
 
 go 1.27
 

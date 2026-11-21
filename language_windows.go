@@ -3,6 +3,13 @@ package main
 import "golang.org/x/sys/windows"
 
 var englishLabels = map[string]string{
+	"分流规则": "Routing rules", "编辑模式": "Edit mode", "协议选项": "Protocols", "选择目录": "Choose folder", "扫描 EXE": "Scan EXEs", "处理本地回环": "Loopback", "处理局域网": "Local network", "返回规则编辑": "Back to rules",
+	"新建进程模式": "New process mode", "新建 IP 路由表": "New IP route table", "使用选中模式": "Use selected", "删除模式": "Delete mode", "保存模式": "Save mode", "验证": "Validate", "使用常规网络设置": "Use default network settings",
+	"添加 Apple 直连订阅": "Add Apple direct rules", "保存并更新规则": "Save and update", "测试规则匹配": "Test match", "本地规则 · 类型,匹配值,DIRECT / PROXY / REJECT": "Local rules · type, value, DIRECT / PROXY / REJECT",
+	"订阅 · 每行填写动作、空格和 HTTPS 规则直链": "Subscriptions · one action and HTTPS URL per line", "备注": "Name", "文件名": "File name", "处理规则 · 代理": "Include · proxy", "分流规则 · 直连优先": "Exclude · direct first", "创建模式": "Create a mode", "选择已保存的模式": "Select a saved mode",
+	"进程接管选项": "Protocols and scope", "DNS 上游 · IP:端口": "DNS upstream · IP:port", "ICMP 延迟（毫秒）": "ICMP delay (ms)", "回环选项适用于经本地代理的 TCP。原生回环连接由 Windows 处理。": "Loopback applies to TCP via the local proxy. Windows handles native loopback.",
+	"进程模式匹配程序。路由表匹配目标 IP 或 CIDR。":  "Process modes match apps. Route tables match destination IP ranges.",
+	"每行一个 EXE 名、完整路径、目录或 re: 表达式。": "One EXE, full path, folder or re: expression per line.", "每行一个 IPv4、IPv6 或 CIDR。": "One IPv4, IPv6 or CIDR per line.",
 	"打开主窗口": "Open window", "连接 / 断开隧道": "Connect / disconnect", "切换路由模式 (分流/全局)": "Switch routing mode", "自动优选最快节点": "Select fastest node", "快捷节点": "Quick profiles", "彻底退出": "Quit",
 	"尚未配置节点": "No node configured", "停止质量测试": "Stop quality test", "请先启动连接": "Connect first", "请先选择节点": "Select a node first", "已切换节点": "Node switched", "请选择快捷节点": "Select a quick profile", "MasterKey · 64 位十六进制": "MasterKey · 64 hex characters",
 	"粘贴一个节点链接，可直接复制 Debian 菜单 4 中的一整行": "Paste a share link from Debian menu 4", "可导入服务端分享链接，或手动填写 UDP 节点": "Import a share link or add a UDP node manually", "查看匹配的规则，处理误拦截": "Inspect matching rules and exceptions",

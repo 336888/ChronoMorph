@@ -10,6 +10,7 @@ import (
 
 // A nil Network preserves the settings of clients created before the settings editor.
 type NetworkOptions struct {
+	mode         *modeRules
 	LANOnly      bool     `json:"lan_only,omitempty"`
 	Quick        int      `json:"quick_profiles"`
 	Heartbeat    int      `json:"heartbeat_seconds"`

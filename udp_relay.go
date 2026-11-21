@@ -48,6 +48,19 @@ func handleSocks5UDPAssociate(tcpConn net.Conn, cm *ClientMux, router *Router, r
 	flow := monitor.begin(tcpConn, "SOCKS5 UDP", cmRoute(cm), "等待数据报", tcpConn)
 	defer monitor.end(flow)
 	var clientUDPAddr atomic.Pointer[net.UDPAddr]
+	var direct directUDPFlows
+	defer direct.close()
+	replyDirect := func(target string, data []byte) {
+		peer := clientUDPAddr.Load()
+		if peer == nil {
+			return
+		}
+		if pkt := packSocks5UDP(target, data); pkt != nil {
+			if _, e := udpPC.WriteToUDP(pkt, peer); e == nil && flow != nil {
+				flow.down.Add(uint64(len(data)))
+			}
+		}
+	}
 	go func() {
 		defer udpPC.Close()
 		defer tcpConn.Close()
@@ -82,7 +95,11 @@ func handleSocks5UDPAssociate(tcpConn net.Conn, cm *ClientMux, router *Router, r
 			continue
 		}
 		clientUDPAddr.CompareAndSwap(nil, addr)
-		if err := writeUDPFramed(stream, target, payload); err != nil {
+		if router != nil && cm.entry == nil && !router.IsGlobalMode() && router.routes.Load().match(target).action == "DIRECT" {
+			if err := direct.send(target, payload, replyDirect); err != nil {
+				continue
+			}
+		} else if err := writeUDPFramed(stream, target, payload); err != nil {
 			return
 		}
 		if flow != nil {

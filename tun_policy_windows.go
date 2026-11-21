@@ -23,6 +23,7 @@ type tunPolicy struct {
 	opts     NetworkOptions
 	virtual  winipcfg.LUID
 	resolver string
+	endpoint *modeEndpoint
 	bypass   []netip.Prefix
 }
 type tunPath int
@@ -34,6 +35,27 @@ const (
 )
 
 func (p *tunPolicy) path(m *M.Metadata) (tunPath, error) {
+	r := p.opts.mode
+	ip := m.DstIP.Unmap()
+	if p.endpoint != nil && p.endpoint.router != nil {
+		router := p.endpoint.router
+		if h := router.routes.Load().match(ip.String()); h.action == "REJECT" {
+			return pathProxy, fmt.Errorf("目标 IP 命中阻止规则")
+		} else if h.action == "DIRECT" && !router.IsGlobalMode() {
+			return pathPhysical, nil
+		}
+	}
+	if r != nil {
+		if containsIP(p.bypass, ip) {
+			return pathPhysical, nil
+		}
+		if r.mode.Kind == routeMode && !r.routesIP(ip) {
+			return pathPhysical, nil
+		}
+		if r.mode.Kind == processMode && (ip.IsLoopback() && !r.mode.Loopback || modeLAN(ip) && !r.mode.LAN) {
+			return pathPhysical, nil
+		}
+	}
 	selected := true
 	needOwner := len(p.opts.Processes) > 0
 	dns := m.DstPort == 53 && p.opts.DNS
@@ -49,7 +71,13 @@ func (p *tunPolicy) path(m *M.Metadata) (tunPath, error) {
 	if !enabled && !dns {
 		return pathPhysical, nil
 	}
-	if needOwner {
+	if r != nil && r.mode.Kind == processMode {
+		var e error
+		selected, e = namedProcessMatches(r, flowPID(m))
+		if e != nil {
+			return pathProxy, e
+		}
+	} else if needOwner {
 		pid := flowPID(m)
 		if pid == 0 {
 			return pathProxy, fmt.Errorf("无法识别套接字所属进程")
@@ -116,6 +144,17 @@ func (p *tunPolicy) DialContext(ctx context.Context, m *M.Metadata) (net.Conn, e
 		return nil, e
 	}
 	if path == pathProxy {
+		if p.opts.mode != nil && p.endpoint != nil {
+			target := m.DestinationAddress()
+			cm := p.endpoint.current.Load()
+			if cm == nil {
+				return nil, fmt.Errorf("节点已断开")
+			}
+			if p.endpoint.router.ShouldBlock(target) {
+				return nil, fmt.Errorf("blocked: %s", target)
+			}
+			return dialProxyTCP(target, cm, nil, nil, "TUN")
+		}
 		return p.Dialer.DialContext(ctx, m)
 	}
 	return p.connect(ctx, "tcp", m, path)
@@ -219,13 +258,11 @@ var procCache struct {
 	entries map[uint32]procItem
 }
 
-func matchesProcess(pid uint32, names []string, children bool) (bool, bool) {
-	procCache.Lock()
-	defer procCache.Unlock()
+func refreshProcessCache(pid uint32) bool {
 	if _, ok := procCache.entries[pid]; !ok || time.Now().After(procCache.expires) {
 		snap, e := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 		if e != nil {
-			return false, false
+			return false
 		}
 		defer windows.CloseHandle(snap)
 		var p windows.ProcessEntry32
@@ -236,6 +273,15 @@ func matchesProcess(pid uint32, names []string, children bool) (bool, bool) {
 		}
 		procCache.entries = items
 		procCache.expires = time.Now().Add(300 * time.Millisecond)
+	}
+
+	return true
+}
+func matchesProcess(pid uint32, names []string, children bool) (bool, bool) {
+	procCache.Lock()
+	defer procCache.Unlock()
+	if !refreshProcessCache(pid) {
+		return false, false
 	}
 	for depth := 0; pid != 0 && depth < 32; depth++ {
 		p, ok := procCache.entries[pid]

@@ -7,7 +7,7 @@ go mod verify || exit /b 1
 go test -mod=readonly -v ./...
 if errorlevel 1 ( pause & exit /b 1 )
 
-set "VER=v1.4.7"
+set "VER=v1.5.0"
 set "LDFLAGS=-s -w -X main.AppVersion=%VER%"
 
 if exist dist rmdir /s /q dist
@@ -17,9 +17,9 @@ echo [2/5] 编译 Windows GUI...
 set CGO_ENABLED=0
 set "GOOS=windows"
 set "GOARCH=amd64"
-go build -mod=readonly -trimpath -buildvcs=false -ldflags="%LDFLAGS% -H=windowsgui" -o dist\windows\ChronoMorph.exe . || exit /b 1
+go build -mod=readonly -trimpath -buildvcs=false -ldflags="%LDFLAGS% -H=windowsgui" -o dist\windows\Slacker.exe . || exit /b 1
 copy /y assets\licenses\*.txt dist\windows\ >nul || exit /b 1
-powershell -NoProfile -Command "$ErrorActionPreference='Stop'; Compress-Archive -Path dist\windows\* -DestinationPath dist\chronomorph-windows-amd64.zip" || exit /b 1
+powershell -NoProfile -Command "$ErrorActionPreference='Stop'; Compress-Archive -Path dist\windows\* -DestinationPath dist\slacker-windows-amd64.zip" || exit /b 1
 copy /y setup_win.ps1 dist\windows\ >nul 2>&1
 copy /y uninstall_win.ps1 dist\windows\ >nul 2>&1
 copy /y client.example.json dist\windows\client.json >nul 2>&1
@@ -27,15 +27,15 @@ copy /y client.example.json dist\windows\client.json >nul 2>&1
 echo [3/5] 编译 Debian 服务端...
 set "GOOS=linux"
 set "GOARCH=amd64"
-go build -mod=readonly -trimpath -buildvcs=false -ldflags="%LDFLAGS%" -o dist\debian\chronomorph_amd64 . || exit /b 1
+go build -mod=readonly -trimpath -buildvcs=false -ldflags="%LDFLAGS%" -o dist\debian\slacker_amd64 . || exit /b 1
 set GOARCH=arm64
-go build -mod=readonly -trimpath -buildvcs=false -ldflags="%LDFLAGS%" -o dist\debian\chronomorph_arm64 . || exit /b 1
+go build -mod=readonly -trimpath -buildvcs=false -ldflags="%LDFLAGS%" -o dist\debian\slacker_arm64 . || exit /b 1
 copy /y cm.sh dist\debian\ >nul 2>&1
 
 echo [4/5] 编译 Android ARM64...
 set "GOOS=android"
 set "GOARCH=arm64"
-go build -mod=readonly -trimpath -buildvcs=false -ldflags="%LDFLAGS%" -o dist\android\chronomorph_android_arm64 . || exit /b 1
+go build -mod=readonly -trimpath -buildvcs=false -ldflags="%LDFLAGS%" -o dist\android\slacker_android_arm64 . || exit /b 1
 
 echo [5/5] 打包完成！
 dir /s /b dist

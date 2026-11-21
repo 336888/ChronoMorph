@@ -31,7 +31,7 @@ func (g *GUIController) BuildDiagReport() string {
 	g.mu.Unlock()
 
 	var sb strings.Builder
-	sb.WriteString("=== ChronoMorph Diagnostic Report ===\n")
+	sb.WriteString("=== Slacker Diagnostic Report ===\n")
 	sb.WriteString(fmt.Sprintf("Version      : %s\n", VersionString()))
 	sb.WriteString(fmt.Sprintf("OS / Arch    : %s / %s\n", runtime.GOOS, runtime.GOARCH))
 	sb.WriteString(fmt.Sprintf("Time (UTC)   : %s\n", time.Now().UTC().Format(time.RFC3339)))

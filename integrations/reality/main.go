@@ -9,8 +9,8 @@ import (
 	"io"
 	"os"
 
-	"chronomorph/internal/bridgeconfig"
-	"chronomorph/internal/realitytransport"
+	"slacker/internal/bridgeconfig"
+	"slacker/internal/realitytransport"
 )
 
 func run(output io.Writer) error {

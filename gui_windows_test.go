@@ -437,6 +437,51 @@ func TestWindowsGUIProcess(t *testing.T) {
 		t.Fatal("independent settings not persisted")
 	}
 	t.Log("Native chain saved offline; failed refresh retained rules; domain lookup, allow, remove, pause and resume verified")
+	click(navRoutes)
+	setField(routeManual, "DOMAIN-SUFFIX,example.net,DIRECT")
+	click(routeSave)
+	wait("native routing edit did not apply", func() bool { return strings.Contains(controlText(notice), "已应用 1 条") })
+	setField(routeTarget, "www.example.net")
+	click(routeTest)
+	if got := controlText(notice); !strings.Contains(got, "DIRECT") {
+		t.Fatal("route lookup", got)
+	}
+	click(navModes)
+	click(modeNew)
+	setField(modeRemark, "游戏")
+	setField(modeFile, "games")
+	setField(modeHandle, "game.exe")
+	setField(modeBypass, "updater.exe")
+	click(modeOptions)
+	click(modeChildren)
+	click(modeOptsBack)
+	click(modeVerify)
+	if got := controlText(notice); got != "规则验证通过" {
+		t.Fatal("mode validation", got)
+	}
+	click(modeSave)
+	click(modeUse)
+	wait("saved mode not activated", func() bool {
+		b, _ := os.ReadFile(filepath.Join(cmd.Dir, "client.json"))
+		var c Config
+		_ = json.Unmarshal(b, &c)
+		return c.ActiveMode == "games.json"
+	})
+	click(modeEdit)
+	if controlText(uc("GetDlgItem", native, modeBypass)) != "updater.exe" {
+		t.Fatal("rules did not survive reopen")
+	}
+	click(modeBack)
+	click(modeNewRoute)
+	setField(modeRemark, "IP routes")
+	setField(modeHandle, "192.0.2.0/24")
+	click(modeSave)
+	m, err := readMode(filepath.Join(cmd.Dir, "client.json"), "IP routes")
+	if err != nil || m.Kind != routeMode {
+		t.Fatal(m, err)
+	}
+	t.Log("Slacker navigation, manual routing preview, named process and IP modes verified")
+
 	click(navPrefs)
 	click(openNetwork)
 	setField(netHeartbeat, "12")

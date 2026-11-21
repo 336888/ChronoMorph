@@ -97,6 +97,7 @@ type TUNManager struct {
 	ifIndex     uint32
 	dns         *tunnelDNS
 	activeNode  *ClientMux
+	endpoint    *modeEndpoint
 	pins        map[*ClientMux]hostRoute
 	owned       map[hostRoute]bool
 	interrupted bool
@@ -117,6 +118,18 @@ func (g *GUIController) toggleTUN() error {
 		return fmt.Errorf("请先启动连接")
 	}
 	opts := g.cfg.networkOptions()
+	var rules *modeRules
+	if name := g.cfg.ActiveMode; name != "" {
+		m, e := readMode(g.cfgPath, name)
+		if e != nil {
+			return fmt.Errorf("读取模式 %s: %w", name, e)
+		}
+		rules, e = compileMode(m)
+		if e != nil {
+			return e
+		}
+		opts = m.overlay(opts, rules)
+	}
 	if err := opts.validate(); err != nil {
 		return err
 	}
@@ -138,7 +151,11 @@ func (g *GUIController) toggleTUN() error {
 	for p := range g.probes {
 		nodes = append(nodes, p)
 	}
-	return GlobalTUN.start(g.proxyAddressLocked(), nodes, g.router, "127.0.0.1:53", upstreams, tunPrefixes, g.cfg.TUNBlockIPv6, opts)
+	prefixes, e := modeDestinations(rules, tunPrefixes)
+	if e != nil {
+		return e
+	}
+	return GlobalTUN.start(g.proxyAddressLocked(), nodes, g.router, "127.0.0.1:53", upstreams, prefixes, g.cfg.TUNBlockIPv6, opts)
 }
 
 func (t *TUNManager) start(proxyAddr string, nodes []*ClientMux, router *Router, dnsAddr string, upstreams []string, prefixes []netip.Prefix, block6 bool, options ...NetworkOptions) (err error) {
@@ -225,9 +242,16 @@ func (t *TUNManager) start(proxyAddr string, nodes []*ClientMux, router *Router,
 		}
 	}
 	bypass, _ := ipRanges(opts.Bypass)
-	policy := &tunPolicy{Dialer: p, opts: opts, virtual: t.luid, bypass: bypass}
+	t.endpoint = &modeEndpoint{router: router}
+	t.endpoint.current.Store(nodes[0])
+	if router != nil && opts.mode != nil && opts.mode.mode.Kind == processMode && opts.mode.mode.Loopback && opts.mode.mode.TCP {
+		rules := opts.mode
+		sel := loopbackSelector(func(c net.Conn) (bool, error) { return modeProxyOwner(c, rules) })
+		router.loopback.Store(&sel)
+	}
+	policy := &tunPolicy{Dialer: p, opts: opts, virtual: t.luid, bypass: bypass, endpoint: t.endpoint}
 	if opts.DNS {
-		if opts.SelectedDNS && len(opts.Processes) > 0 {
+		if opts.SelectedDNS && processScoped(opts) {
 			dnsAddr = "127.0.0.1:0"
 		}
 		t.dns, err = startTunnelDNS(dnsAddr, nodes[0], router, upstreams, func(s *tunnelDNS) {
@@ -252,7 +276,7 @@ func (t *TUNManager) start(proxyAddr string, nodes []*ClientMux, router *Router,
 		policy.resolver = t.dns.udp.LocalAddr().String()
 	}
 	handler.SetDialer(policy)
-	if opts.DNS && (!opts.SelectedDNS || len(opts.Processes) == 0) {
+	if opts.DNS && (!opts.SelectedDNS || !processScoped(opts)) {
 		if err = t.luid.SetDNS(windows.AF_INET, []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil); err != nil {
 			return fmt.Errorf("设置 TUN DNS: %w", err)
 		}
@@ -406,6 +430,9 @@ func (t *TUNManager) adopt(old, next *ClientMux) {
 		return
 	}
 	t.activeNode = next
+	if t.endpoint != nil {
+		t.endpoint.current.Store(next)
+	}
 	if t.dns != nil {
 		t.dns.client.Store(next)
 	}
@@ -453,6 +480,13 @@ func (t *TUNManager) stopLocked() {
 	t.stopStack()
 	t.stopStack = nil
 	t.activeNode = nil
+	if t.endpoint != nil {
+		if t.endpoint.router != nil {
+			t.endpoint.router.loopback.Store(nil)
+		}
+		t.endpoint.current.Store(nil)
+		t.endpoint = nil
+	}
 	t.interrupted = false
 }
 func (t *TUNManager) StopTUN()       { t.mu.Lock(); defer t.mu.Unlock(); t.stopLocked() }

@@ -92,8 +92,16 @@ func existingDesktop() uintptr {
 	return w
 }
 func (u *desktopUI) px(n int) int { return int(math.Round(float64(n) * u.scale)) }
+
+// Compress the navigation rail while keeping editor widths and font sizes intact.
+func layoutX(x int) int {
+	if x >= 187 {
+		return x - 34
+	}
+	return x * 153 / 187
+}
 func (u *desktopUI) rect(x, y, w, h int) winRect {
-	return winRect{int32(u.px(x)), int32(u.px(y)), int32(u.px(x + w)), int32(u.px(y + h))}
+	return winRect{int32(u.px(layoutX(x))), int32(u.px(y)), int32(u.px(layoutX(x + w))), int32(u.px(y + h))}
 }
 func (u *desktopUI) font(size, weight int) uintptr {
 	k := [2]int{size, weight}
@@ -171,7 +179,7 @@ func (u *desktopUI) run(ready chan<- error) {
 	if area.right <= area.left || area.bottom <= area.top {
 		area = winRect{0, 0, 1280, 720}
 	}
-	u.scale = math.Min(u.scale, math.Min(float64(area.right-area.left-20)/screenW, float64(area.bottom-area.top-58)/screenH))
+	u.scale = math.Min(u.scale, math.Min(float64(area.right-area.left-20)/float64(layoutX(screenW)), float64(area.bottom-area.top-58)/screenH))
 	if u.scale <= 0 {
 		u.scale = 1
 	}
@@ -189,16 +197,18 @@ func (u *desktopUI) run(ready chan<- error) {
 	w, h := r.right-r.left, r.bottom-r.top
 	x := area.left + (area.right-area.left-w)/2
 	y := area.top + (area.bottom-area.top-h)/2
-	u.hwnd = createControl(desktopClass, "ChronoMorph", 0, desktopStyle, winRect{x, y, x + w, y + h}, 0, 0, u.instance)
+	u.hwnd = createControl(desktopClass, "Slacker", 0, desktopStyle, winRect{x, y, x + w, y + h}, 0, 0, u.instance)
 	if u.hwnd == 0 {
 		ready <- fmt.Errorf("无法创建桌面窗口")
 		return
 	}
-	// Ask DWM to match the dark client area on supported Windows versions.
-	dark := int32(1)
+	// Use a light title bar and native rounded corners when DWM supports them.
+	dark := int32(0)
+	corner := int32(2)
 	dwm := windows.NewLazySystemDLL("dwmapi.dll").NewProc("DwmSetWindowAttribute")
 	if dwm.Find() == nil {
 		dwm.Call(u.hwnd, 20, uintptr(unsafe.Pointer(&dark)), 4)
+		dwm.Call(u.hwnd, 33, uintptr(unsafe.Pointer(&corner)), 4)
 	}
 	u.icon = uc("LoadImageW", u.instance, 1, 1, uintptr(u.px(48)), uintptr(u.px(48)), 0x8000)
 	if u.icon == 0 {
@@ -272,7 +282,7 @@ func desktopWindowProc(hwnd uintptr, msg uint32, w, l uintptr) uintptr {
 					ink = mint
 				}
 				if u.isError {
-					ink = 0xffb39c
+					ink = 0xb1242e
 				}
 				gc("SetTextColor", w, colorRef(ink))
 				gc("SetBkColor", w, colorRef(bg))

@@ -14,15 +14,15 @@ import (
 )
 
 const (
-	bg       = 0x0e1521
-	side     = 0x101a28
-	panel    = 0x172232
-	edge     = 0x2a384a
-	fg       = 0xeaf1f6
-	muted    = 0xa4b5c7
-	mint     = 0x51e4c3
-	blue     = 0x71aaff
-	editorBG = 0x101b29
+	bg       = 0xf4f4f8
+	side     = 0xf9f9fb
+	panel    = 0xffffff
+	edge     = 0xdadce3
+	fg       = 0x1c1c1e
+	muted    = 0x585960
+	mint     = 0x0065d9
+	blue     = 0x0065d9
+	editorBG = 0xffffff
 )
 const (
 	homePage = iota + 1
@@ -112,17 +112,20 @@ type nativeControl struct {
 	label string
 }
 type desktopResult struct {
-	health         string
-	benchText      string
-	originPage     int
-	message        string
-	err            error
-	nextPage       int
-	ping           int64
-	measured       bool
-	measuredClient *ClientMux
+	scanField, scanGen int
+	scanLines          []string
+	health             string
+	benchText          string
+	originPage         int
+	message            string
+	err                error
+	nextPage           int
+	ping               int64
+	measured           bool
+	measuredClient     *ClientMux
 }
 type desktopUI struct {
+	editor                                            modeEditor
 	language                                          string
 	checked                                           map[int]bool
 	quickNodes                                        []NodeProfile
@@ -191,10 +194,11 @@ func (u *desktopUI) setupControls() {
 	n := createControl("STATIC", "", 0, 0x40004000, u.rect(214, 506, 600, 28), u.hwnd, noticeControl, u.instance)
 	uc("SendMessageW", n, 0x30, u.font(13, 400), 1)
 	u.controls[noticeControl] = &nativeControl{n, 0, ""}
-	for i, name := range []string{"连接概览", "实时连接", "我的节点", "链式代理", "去广告", "连接日志", "设置"} {
-		u.button(navHome+i, 0, 14, 114+i*49, 158, 41, name)
+	for i, item := range navigation {
+		u.button(item.id, 0, 12, 98+i*42, 160, 37, item.label)
 	}
 	u.setupNetworkControls()
+	u.setupRuleControls()
 	u.setupLiveControls()
 	u.button(importAction, 0, 704, 27, 113, 37, "导入节点")
 	u.button(toggleAction, homePage, 650, 130, 139, 43, "启动连接")
@@ -256,6 +260,9 @@ func (u *desktopUI) setPage(page int) {
 	u.isError = false
 	for id, c := range u.controls {
 		show := c.page == 0 || c.page == page || (id == backAction && (page == manualPage || page == importPage))
+		if page == rulesEditorPage && u.editor.draft.Kind == routeMode && (id >= modeChooseIn && id <= modeScanOut || id == modeOptions) {
+			show = false
+		}
 		if c.page == -2 {
 			show = page >= generalNetPage && page <= dnsNetPage
 		}
@@ -269,6 +276,15 @@ func (u *desktopUI) setPage(page int) {
 		uc("ShowWindow", c.h, cmd)
 	}
 	switch page {
+	case modesPage:
+		u.loadModes("")
+	case routesPage:
+		g := u.ctrl
+		g.mu.Lock()
+		s := g.cfg.Routing
+		g.mu.Unlock()
+		u.setField(routeManual, s.Manual)
+		u.setField(routeFeedsEdit, s.Sources)
 	case generalNetPage, processNetPage, adapterNetPage, dnsNetPage:
 		u.loadNetworkPage()
 	case benchPage:
@@ -522,10 +538,17 @@ func (u *desktopUI) finish() {
 		}
 		if r.originPage != 0 && r.originPage != u.page {
 			if r.err != nil {
-				log.Printf("[去广告] %v", r.err)
+				log.Printf("[桌面] %v", r.err)
 			}
 			u.refresh()
 			return
+		}
+		if r.scanField != 0 && r.scanGen != u.editor.generation {
+			u.refresh()
+			return
+		}
+		if r.scanField != 0 && r.err == nil {
+			u.setField(r.scanField, mergeRuleLines(u.field(r.scanField), r.scanLines))
 		}
 		if r.err != nil {
 			u.message = r.err.Error()
@@ -547,8 +570,8 @@ func (u *desktopUI) finish() {
 }
 func (u *desktopUI) command(id int) {
 	g := u.ctrl
-	if id >= navHome && id <= navPrefs {
-		u.setPage(id - navHome + 1)
+	if page, _ := navItem(id); page != 0 {
+		u.setPage(page)
 		return
 	}
 	// Local policy edits may proceed while an unrelated subscription downloads.
@@ -559,7 +582,7 @@ func (u *desktopUI) command(id int) {
 			return
 		}
 	}
-	if u.networkCommand(id) {
+	if u.ruleCommand(id) || u.networkCommand(id) {
 		return
 	}
 	switch id {

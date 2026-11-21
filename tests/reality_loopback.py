@@ -1,4 +1,4 @@
-"""Verify public TLS forwarding and private ChronoMorph traffic on a single loopback port."""
+"""Verify public TLS forwarding and private Slacker traffic on a single loopback port."""
 import base64
 import contextlib
 import json

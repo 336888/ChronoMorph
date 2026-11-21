@@ -17,9 +17,9 @@ var trayIcon []byte
 func RunTray(ctrl *GUIController, showWindow, onExit func()) {
 	systray.Run(func() {
 		systray.SetIcon(trayIcon)
-		systray.SetTooltip("ChronoMorph · 桌面客户端")
+		systray.SetTooltip("Slacker · 桌面客户端")
 
-		mOpen := systray.AddMenuItem("打开主窗口", "显示 ChronoMorph 桌面窗口")
+		mOpen := systray.AddMenuItem("打开主窗口", "显示 Slacker 桌面窗口")
 		systray.AddSeparator()
 		mToggle := systray.AddMenuItem("连接 / 断开隧道", "快速启停加密隧道")
 		mMode := systray.AddMenuItem("切换路由模式 (分流/全局)", "实时切换智能分流与全局代理")

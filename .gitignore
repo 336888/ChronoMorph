@@ -3,9 +3,10 @@ dist/
 *.syso
 !icon_windows_amd64.syso
 *.dll
+slacker
 chronomorph
 chronomorph_linux*
-chronomorph_android*
+slacker_android*
 client.json
 server.json
 traffic.json

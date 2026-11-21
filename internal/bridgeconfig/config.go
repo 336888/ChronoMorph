@@ -1,4 +1,4 @@
-// Package bridgeconfig defines the private stdin protocol between ChronoMorph
+// Package bridgeconfig defines the private stdin protocol between Slacker
 // and its companion compiled against the pinned XTLS sources.
 package bridgeconfig
 

@@ -18,7 +18,7 @@ import (
 	"strconv"
 	"time"
 
-	"chronomorph/internal/bridgeconfig"
+	"slacker/internal/bridgeconfig"
 )
 
 // RealityNode is public transport metadata. Each user's existing master key

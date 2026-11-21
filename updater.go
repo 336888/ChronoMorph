@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-const githubRepo = "336888/ChronoMorph"
+const githubRepo = "336888/Slacker"
 
 type UpdateInfo struct {
 	Current   string `json:"current"`
@@ -24,7 +24,7 @@ func CheckLatestRelease() UpdateInfo {
 		return info
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", "ChronoMorph-Client")
+	req.Header.Set("User-Agent", "Slacker-Client")
 
 	resp, err := client.Do(req)
 	if err != nil || resp.StatusCode != 200 {

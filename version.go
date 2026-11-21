@@ -27,10 +27,10 @@ func printLicenses(w io.Writer) error {
 }
 
 var (
-	AppVersion = "v1.4.7"
+	AppVersion = "v1.5.0"
 	BuildTime  = "dev"
 )
 
 func VersionString() string {
-	return fmt.Sprintf("ChronoMorph %s (built %s)", AppVersion, BuildTime)
+	return fmt.Sprintf("Slacker %s (built %s)", AppVersion, BuildTime)
 }

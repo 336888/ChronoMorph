@@ -39,6 +39,7 @@ const (
 )
 
 type Config struct {
+	ActiveMode      string          `json:"active_traffic_mode,omitempty"`
 	Network         *NetworkOptions `json:"network,omitempty"`
 	LockEntryType   bool            `json:"lock_entry_type,omitempty"`
 	TUNBlockIPv6    bool            `json:"tun_block_ipv6,omitempty"`
@@ -58,6 +59,7 @@ type Config struct {
 	Users         []UserEntry    `json:"users,omitempty"`
 	Profiles      []NodeProfile  `json:"profiles,omitempty"`
 	ActiveIndex   int            `json:"active_index,omitempty"`
+	Routing       RouteSettings  `json:"routing,omitempty"`
 	DirectDomains []string       `json:"direct_domains,omitempty"`
 	BlockDomains  []string       `json:"block_domains,omitempty"`
 }
@@ -68,7 +70,7 @@ func main() {
 			RunWindowsGUI("client.json")
 			return
 		}
-		fmt.Println("用法: chronomorph <server | client | keygen | version> [-c config.json]")
+		fmt.Println("用法: slacker <server | client | keygen | version> [-c config.json]")
 		os.Exit(1)
 	}
 
@@ -214,7 +216,7 @@ func runServer(cfgPath string) {
 						go handleServerSession(tunedKCP(conn))
 					}
 				}()
-				log.Printf("[Server] ChronoMorph %s UDP 监听 %s (用户数: %d)", AppVersion, rawPC.LocalAddr(), len(users))
+				log.Printf("[Server] Slacker %s UDP 监听 %s (用户数: %d)", AppVersion, rawPC.LocalAddr(), len(users))
 			} else {
 				_ = rawPC.Close()
 				err = listenErr
@@ -653,6 +655,7 @@ func runHeadlessClient(cfgPath string) {
 	cm.startClockSync()
 
 	router := cfg.newRouter()
+	router.restoreRoutes(cfgPath, cfg.Routing)
 	if len(cfg.AdSubscriptions) > 0 {
 		sources, e := adSources(cfg.AdSubscriptions)
 		if e != nil {
@@ -679,7 +682,7 @@ func runHeadlessClient(cfgPath string) {
 	if err != nil {
 		log.Fatalf("[Client] 监听 %s 失败: %v", cfg.Listen, err)
 	}
-	log.Printf("[Client] ChronoMorph %s 已启动，混合代理监听 %s", AppVersion, cfg.Listen)
+	log.Printf("[Client] Slacker %s 已启动，混合代理监听 %s", AppVersion, cfg.Listen)
 
 	for {
 		c, err := ln.Accept()

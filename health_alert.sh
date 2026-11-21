@@ -7,7 +7,7 @@ HOST_TAG=$(hostname)
 notify() {
     [[ "$BOT_TOKEN" == "YOUR_TG_BOT_TOKEN" ]] && return
     curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-        -d "chat_id=${CHAT_ID}" -d "text=[ChronoMorph | ${HOST_TAG}] $1" >/dev/null
+        -d "chat_id=${CHAT_ID}" -d "text=[Slacker | ${HOST_TAG}] $1" >/dev/null
 }
 
 if ! systemctl is-active --quiet chronomorph; then

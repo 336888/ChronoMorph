@@ -178,7 +178,7 @@ func RunWindowsGUI(cfgPath string) {
 	}
 	if mutexErr != nil {
 		txt, _ := windows.UTF16PtrFromString(mutexErr.Error())
-		_, _ = windows.MessageBox(0, txt, utf("ChronoMorph"), windows.MB_ICONERROR)
+		_, _ = windows.MessageBox(0, txt, utf("Slacker"), windows.MB_ICONERROR)
 		return
 	}
 	// The native window works independently of the optional PAC and compatibility API.
@@ -187,6 +187,11 @@ func RunWindowsGUI(cfgPath string) {
 		defer ln.Close()
 	}
 	log.SetOutput(AppLogs)
+	if IsAutoStartEnabled() {
+		if err := SetAutoStart(true); err != nil {
+			log.Printf("[GUI] 更新自启动路径: %v", err)
+		}
+	}
 	if err := restoreSystemProxy(); err != nil {
 		log.Printf("[GUI] 恢复此前的系统代理失败: %v", err)
 	}
@@ -203,6 +208,7 @@ func RunWindowsGUI(cfgPath string) {
 		router:  cfg.newRouter(),
 	}
 
+	ctrl.router.restoreRoutes(cfgPath, cfg.Routing)
 	ctrl.router.live = &flowMonitor{}
 	stopCh := make(chan struct{})
 	ctrl.startSubscriptions(stopCh)
@@ -351,7 +357,7 @@ func RunWindowsGUI(cfgPath string) {
 
 	mux.HandleFunc("/api/export", func(w http.ResponseWriter, r *http.Request) {
 		ctrl.mu.Lock()
-		p := ShareProfile{ServerIP: ctrl.cfg.ServerIP, MasterKey: ctrl.cfg.MasterKey, TLSNode: ctrl.cfg.TLSNode, Name: "ChronoMorph"}
+		p := ShareProfile{ServerIP: ctrl.cfg.ServerIP, MasterKey: ctrl.cfg.MasterKey, TLSNode: ctrl.cfg.TLSNode, Name: "Slacker"}
 		ctrl.mu.Unlock()
 		link, err := p.encode()
 		if err != nil {
@@ -391,7 +397,7 @@ func RunWindowsGUI(cfgPath string) {
 		close(stopCh)
 		cleanup()
 		text, _ := windows.UTF16PtrFromString(err.Error())
-		title, _ := windows.UTF16PtrFromString("ChronoMorph")
+		title, _ := windows.UTF16PtrFromString("Slacker")
 		_, _ = windows.MessageBox(0, text, title, windows.MB_ICONERROR)
 		return
 	}
@@ -406,7 +412,7 @@ const guiHTML = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>ChronoMorph</title>
+<title>Slacker</title>
 <style>
   * { box-sizing: border-box; font-family: "Segoe UI", system-ui, sans-serif; }
   body { margin: 0; background: #161618; color: #dcdfe4; padding: 20px; user-select: none; max-width: 460px; margin: 0 auto; }
@@ -431,7 +437,7 @@ const guiHTML = `<!DOCTYPE html>
 <body>
 <div class="card">
   <div class="header">
-    <div class="title">ChronoMorph <small id="ver" style="font-size:12px;color:#6b7280"></small></div>
+    <div class="title">Slacker <small id="ver" style="font-size:12px;color:#6b7280"></small></div>
     <span id="badge" class="badge">已断开</span>
   </div>
   <label>服务端 IP</label>

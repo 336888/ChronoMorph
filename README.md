@@ -1,18 +1,28 @@
-# ChronoMorph
+# Slacker
 
-ChronoMorph 提供 TLS 1.3/TCP 和 UDP 两种传输。两者都支持本地 HTTP、SOCKS5 TCP 以及 SOCKS5 UDP 转发。
+Slacker 提供 TLS 1.3/TCP 和 UDP 两种传输。两者都支持本地 HTTP、SOCKS5 TCP 以及 SOCKS5 UDP 转发。
 
 ## Debian 一键安装或升级
 
-下载 Release 附件 [cm.sh](https://github.com/336888/ChronoMorph/releases/latest/download/cm.sh)，在文件所在目录执行：
+下载 Release 附件 [cm.sh](https://github.com/336888/Slacker/releases/latest/download/cm.sh)，在文件所在目录执行：
 
 ```bash
 sudo bash ./cm.sh --install
 ```
 
-脚本识别 AMD64 或 ARM64，下载相应的完整包，校验归档和文件，再安装主程序、REALITY 组件和 `cm` 管理菜单。在线安装需要访问 GitHub。私有仓库首次下载脚本需登录 GitHub。在服务器上可按提示输入仅有本仓库 Contents 读取权限的 Token，输入隐藏。如果当前账号已登录 GitHub CLI，脚本也会使用它的凭据。非交互安装支持 `GH_TOKEN` 或 `GITHUB_TOKEN`，使用 sudo 时需让安装进程取得该环境变量。
+脚本识别 AMD64 或 ARM64，下载相应的完整包，校验归档和文件，再安装主程序、REALITY 组件和 `cm` 管理菜单。在线安装需要访问 GitHub。私有仓库首次下载脚本需登录 GitHub。此公开仓库可匿名下载。如果当前账号已登录 GitHub CLI，脚本也会使用它的凭据。非交互安装支持 `GH_TOKEN` 或 `GITHUB_TOKEN`，使用 sudo 时需让安装进程取得该环境变量。
 
 完成本次更新后，后续直接运行 `sudo cm --install`，或在 `sudo cm` 菜单选 **1**。升级会短暂重启服务，并检查已启用的入口。脚本沿用已有用户和节点密钥；新版服务验证失败时恢复上个版本。离线安装可解压同版本的 Debian 完整包，从包内运行同一条命令，系统依赖仍通过 apt 安装。
+
+## Windows 客户端
+
+Slacker 沿用 ChronoMorph 的节点链接、客户端配置和 Debian 服务目录。Windows 升级时先从托盘退出旧版，将新版 EXE 放在原客户端目录，保留 `client.json`。
+
+- **去广告**管理域名订阅、暂停过滤、查询命中规则和维护放行名单。可直接添加 217heidai 订阅。
+- **分流规则**支持本地规则和 blackmatrix7 的 Surge 文本订阅。每行本地规则写作 `DOMAIN-SUFFIX,example.com,DIRECT`。可用动作是 DIRECT、PROXY、REJECT，可用类型是 DOMAIN、DOMAIN-SUFFIX、DOMAIN-KEYWORD、IP-CIDR 和 IP-CIDR6。每行订阅写作 `DIRECT https://…/xxx.list`。本地规则优先，首条命中生效。保存并更新后可测试域名或 IP。更新失败保留已有规则，重启可从缓存载入。
+- **进程模式**可以分别创建进程规则与 IP 路由表。填写备注和文件名，输入或扫描 EXE，或选择某个目录。两侧列表分别指定接管与直连，直连例外优先。点击「验证」和「保存模式」，再选中并点击「使用选中模式」。重新开启 TUN 后生效。回环选项处理已接入本地 HTTP/SOCKS 代理的 TCP 请求，Windows 原生本机回环不经过 Wintun。
+
+智能分流按目标域名或 IP 判断。TUN 收到的普通 IP 数据包按可见 IP 判断。全局代理及串联节点继续通过代理转发，拦截规则仍然有效。
 
 ## Windows 高级网络设置
 
@@ -61,16 +71,16 @@ TUN 每 5 秒复查上行路由，网关变化时重新建立传输。自动恢�
 
 1. 按上面的 Debian 一键安装或升级步骤安装主程序和配套组件。
 2. 输入 `sudo cm`，选 **12 → 1**。填入从 VPS 能正常访问、证书覆盖该域名且支持 TLS 1.3 的目标站，例如可尝试 `aws.amazon.com`。填写节点的空闲 TCP 端口，默认 443；目标地址默认用所填域名的 443。主机防火墙与云安全组需要放行节点端口。该模式使用一次外部目标连接来建立新的传输会话，目标不可达时新连接会失败。
-3. 选 **4** 获取 `cm+reality://` 链接。Windows 下载单文件 [ChronoMorph-windows-amd64.exe](https://github.com/336888/ChronoMorph/releases/latest/download/ChronoMorph-windows-amd64.exe)。彻底退出旧客户端，打开新版，在「导入节点」粘贴链接并测试。Windows v1.4.2 起也可直接粘贴菜单 4 中带有 `[IPv4 REALITY]` 或 `[IPv6 REALITY]` 的一整行，每次选择一个节点。链接包含用户凭据，请仅交给节点使用者。
+3. 选 **4** 获取 `cm+reality://` 链接。Windows 下载单文件 [Slacker-windows-amd64.exe](https://github.com/336888/Slacker/releases/latest/download/Slacker-windows-amd64.exe)。彻底退出旧客户端，打开新版，在「导入节点」粘贴链接并测试。Windows v1.4.2 起也可直接粘贴菜单 4 中带有 `[IPv4 REALITY]` 或 `[IPv6 REALITY]` 的一整行，每次选择一个节点。链接包含用户凭据，请仅交给节点使用者。
 4. 用 `sudo chronomorph reality -check` 在 Debian 本机验证普通 HTTPS 的目标站证书、节点身份和隧道应答。外部 Windows 客户端连通后，可以选 **12 → 2** 关闭旧入口；需要恢复并存选 **12 → 3**。菜单重启服务并验证，失败会恢复原配置。
 
-外层握手使用 [XTLS/Xray-core v26.11.9](https://github.com/XTLS/Xray-core/tree/676eaf66f8f05d4d558ee7a74b4736623d3feeb9) 和其锁定的 [REALITY](https://github.com/XTLS/REALITY/tree/4bb46b2afd8b)。内部传输使用 ChronoMorph，节点链接仅适用于支持此入口的 ChronoMorph 客户端。SOCKS5 UDP 数据通过 TCP 承载，线路丢包时会受到 TCP 重传影响。
+外层握手使用 [XTLS/Xray-core v26.11.9](https://github.com/XTLS/Xray-core/tree/676eaf66f8f05d4d558ee7a74b4736623d3feeb9) 和其锁定的 [REALITY](https://github.com/XTLS/REALITY/tree/4bb46b2afd8b)。内部传输使用 Slacker，节点链接仅适用于支持此入口的 Slacker 客户端。SOCKS5 UDP 数据通过 TCP 承载，线路丢包时会受到 TCP 重传影响。
 
 ## 自有域名 HTTPS 网站入口
 
-v1.3.0 的 `cm+https://` 节点使用你自己域名的有效证书。普通浏览器打开网站时，入口将网页请求送到指定的本机 HTTP 网站。浏览器可协商 HTTP/2，无需出示客户端证书。ChronoMorph 客户端通过系统信任链和域名验证证书，再用现有用户密钥对本次 TLS 连接签名，建立 HTTP/1.1 CONNECT 隧道。认证信息无法在另一条 TLS 连接上重用。网站入口沿用服务端用户、流量计数和配额。TCP 和应用 UDP 均走 HTTPS/TCP，丢包时可能等待重传。
+v1.3.0 的 `cm+https://` 节点使用你自己域名的有效证书。普通浏览器打开网站时，入口将网页请求送到指定的本机 HTTP 网站。浏览器可协商 HTTP/2，无需出示客户端证书。Slacker 客户端通过系统信任链和域名验证证书，再用现有用户密钥对本次 TLS 连接签名，建立 HTTP/1.1 CONNECT 隧道。认证信息无法在另一条 TLS 连接上重用。网站入口沿用服务端用户、流量计数和配额。TCP 和应用 UDP 均走 HTTPS/TCP，丢包时可能等待重传。
 
-1. 准备能直接指向节点的域名、与之匹配的完整证书链和私钥，以及一个本机可访问、准备公开的网站，例如 `http://127.0.0.1:8080`。网站证书的 TLS 连接必须由 ChronoMorph 直接终止。把后台管理页作为源站会将它公开。端口需要可独占，已有服务占用 443 时可先用另一个空闲 TCP 端口测试。
+1. 准备能直接指向节点的域名、与之匹配的完整证书链和私钥，以及一个本机可访问、准备公开的网站，例如 `http://127.0.0.1:8080`。网站证书的 TLS 连接必须由 Slacker 直接终止。把后台管理页作为源站会将它公开。端口需要可独占，已有服务占用 443 时可先用另一个空闲 TCP 端口测试。
 2. 升级 Debian 和 Windows 到 v1.3.0。运行 `sudo cm`，选 **11 → 1**，输入域名、端口、证书链和私钥的绝对路径，以及 HTTP 源站。选 **4** 导出 HTTPS 链接并在 Windows 导入。旧客户端继续使用原节点。域名、证书与源站由你维护；续签证书后重启服务加载新证书，域名不变时原 HTTPS 链接继续有效。
 3. 在外部浏览器访问该域名与端口，确认看到自己的网页，并在新版客户端验证连接。然后可选 **11 → 2** 停用本服务旧 TCP 和 UDP 监听。处在并存模式时，同一 IP 上的旧入口仍可访问。需要恢复旧节点时选 **11 → 3**，关闭网站入口选 **11 → 4**。修改运行中的服务会短暂重启；在线验证失败时会恢复先前配置。
 4. 在服务器运行 `sudo chronomorph website-check`，可分别检查网站首页和经过认证的隧道。云安全组需要放行网站 TCP 端口。
@@ -85,7 +95,7 @@ v1.2.3 客户端支持在节点握手超时时直接断开或切换节点。网�
 
 v1.1.1 客户端将 SOCKS5 UDP 游戏和语音放在独立传输连接上。第一次发送 UDP 请求时才建立这条连接。同一节点上的 TCP 下载使用另一条连接。两条连接仍共享用户配额和实际链路带宽。现有 `cm://` 与 `cm+tls://` 节点可以继续使用。先升级 Debian 服务端，再退出并更新 Windows 客户端，可同时获得端口变化、快速重启和并发流控修复。
 
-ChronoMorph 借鉴 Hysteria 2 区分可靠流与应用数据报的思路。当前 UDP 应用数据仍通过 KCP 或 TLS 的可靠传输转发，丢包时本条连接仍可能等待重传。协议细节见 [Hysteria 2 官方规范](https://v2.hysteria.network/docs/developers/Protocol/)。
+Slacker 借鉴 Hysteria 2 区分可靠流与应用数据报的思路。当前 UDP 应用数据仍通过 KCP 或 TLS 的可靠传输转发，丢包时本条连接仍可能等待重传。协议细节见 [Hysteria 2 官方规范](https://v2.hysteria.network/docs/developers/Protocol/)。
 
 ## 仅 TLS 传输
 
@@ -93,7 +103,7 @@ Windows 设置页可打开「仅 TLS 传输」。现有 `cm+auto://` 和 `cm+tls
 
 开启后网页、游戏和节点测速到节点的连接都只用 TLS/TCP。TLS 失败时返回错误，旧 UDP 节点不会参与测速；游戏的应用 UDP 数据仍能通过 SOCKS5 转发。在丢包线路上，游戏延迟可能因 TCP 重传而升高。切换传输会重建当前隧道，并将 TUN 的本地 DNS 转向新的节点。
 
-此开关只控制进入 ChronoMorph 后到节点的传输。目标站点仍能看到出口 IP，网络观察者仍能看到节点 IP、流量大小和时序。系统代理、全局/智能分流与 TUN 的覆盖范围由各自设置决定。
+此开关只控制进入 Slacker 后到节点的传输。目标站点仍能看到出口 IP，网络观察者仍能看到节点 IP、流量大小和时序。系统代理、全局/智能分流与 TUN 的覆盖范围由各自设置决定。
 
 ## Debian 服务端证书迁移
 
@@ -112,7 +122,7 @@ v1.2.6 服务端停止选择旧的项目专用 ALPN，客户端证书也使用�
 Windows 的「测速」显示往返延迟。要复现吞吐对比，可在 Linux 对编译好的客户端和服务端二进制运行以下命令。脚本在本地启动服务端、客户端和测试目标，按方向传输 8 MiB 数据三次并校验内容，输出应用层 Mbps。用 `--transport udp` 测固定端口 UDP，或用 `--transport auto` 测双协议节点实际选中的路径。
 
 ```sh
-python3 tests/throughput.py ./chronomorph-linux-amd64 --transport tcp --rtt 200 --mbps 100
+python3 tests/throughput.py ./slacker-linux-amd64 --transport tcp --rtt 200 --mbps 100
 ```
 
 ## 双协议节点
@@ -125,9 +135,9 @@ python3 tests/throughput.py ./chronomorph-linux-amd64 --transport tcp --rtt 200 
 
 ## 快速开始
 
-1. **推送到 GitHub 自动编译**：在 Actions 的 Release ChronoMorph 页面手动指定版本，或推送标签 `git tag v1.4.1 && git push origin v1.4.1`，在 Releases 页面下载四端产物。
-2. **Debian 服务端部署**：按菜单放行双协议节点的 TCP 和 UDP 端口，从 Release 下载 `chronomorph-debian-amd64.tar.gz`（x86_64）或 `chronomorph-debian-arm64.tar.gz`（aarch64）。解压并进入同名目录，运行 `sudo bash cm.sh`，选 1 安装或升级。离线包含服务端程序，首次安装系统依赖仍使用 apt，后续输入 `cm` 唤出管理菜单。
-3. **Windows 客户端**：双击单文件客户端打开原生桌面窗口。REALITY 已编译进主程序。在「导入节点」中粘贴分享链接。最小化或关闭窗口会收起到托盘，再次双击 EXE 或选择托盘「打开主窗口」即可恢复。退出请选择托盘「彻底退出」。启用 TUN 时，以管理员身份运行客户端，先连接节点，再在「设置」点击「开启 TUN」。首次启用会将 EXE 内置的官方签名 Wintun 0.14.1 安装到程序文件目录，下次开启时校验并复用。第三方许可可运行 `ChronoMorph-windows-amd64.exe licenses` 查看。
-4. **Android 客户端**：提供 ARM64 命令行程序。在可执行目录准备好 `client.json` 后，运行 `chmod +x chronomorph_android_arm64 && ./chronomorph_android_arm64 client -c client.json`，默认监听 `127.0.0.1:1080`，接入 Mihomo/Clash 的 `socks5` 节点（并在规则顶部放行 VPS IP 直连）。
+1. **推送到 GitHub 自动编译**：在 Actions 的 Release Slacker 页面手动指定版本，或推送标签 `git tag v1.4.1 && git push origin v1.4.1`，在 Releases 页面下载四端产物。
+2. **Debian 服务端部署**：按菜单放行双协议节点的 TCP 和 UDP 端口，从 Release 下载 `slacker-debian-amd64.tar.gz`（x86_64）或 `slacker-debian-arm64.tar.gz`（aarch64）。解压并进入同名目录，运行 `sudo bash cm.sh`，选 1 安装或升级。离线包含服务端程序，首次安装系统依赖仍使用 apt，后续输入 `cm` 唤出管理菜单。
+3. **Windows 客户端**：双击单文件客户端打开原生桌面窗口。REALITY 已编译进主程序。在「导入节点」中粘贴分享链接。最小化或关闭窗口会收起到托盘，再次双击 EXE 或选择托盘「打开主窗口」即可恢复。退出请选择托盘「彻底退出」。启用 TUN 时，以管理员身份运行客户端，先连接节点，再在「设置」点击「开启 TUN」。首次启用会将 EXE 内置的官方签名 Wintun 0.14.1 安装到程序文件目录，下次开启时校验并复用。第三方许可可运行 `Slacker-windows-amd64.exe licenses` 查看。
+4. **Android 客户端**：提供 ARM64 命令行程序。在可执行目录准备好 `client.json` 后，运行 `chmod +x slacker_android_arm64 && ./slacker_android_arm64 client -c client.json`，默认监听 `127.0.0.1:1080`，接入 Mihomo/Clash 的 `socks5` 节点（并在规则顶部放行 VPS IP 直连）。
 
 Windows 客户端直接使用 Win32 桌面窗口。导入后启动本地代理，点击「测速」验证服务端应答。升级 Windows 客户端前，请先退出旧进程。每台客户端请使用独立的服务端用户密钥。

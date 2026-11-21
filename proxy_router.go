@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -17,7 +18,11 @@ import (
 	"time"
 )
 
+type loopbackSelector func(net.Conn) (bool, error)
+
 type Router struct {
+	loopback       atomic.Pointer[loopbackSelector]
+	routes         atomic.Pointer[routeIndex]
 	live           *flowMonitor
 	ads            atomic.Pointer[adRules]
 	mu             sync.RWMutex
@@ -75,6 +80,17 @@ func (cfg *Config) newRouter() *Router {
 	r.setAdPreferences(cfg.AdAllowDomains, cfg.AdPaused)
 	return r
 }
+func (r *Router) restoreRoutes(path string, s RouteSettings) {
+	idx, _, err := buildRouting(context.Background(), path, s, false, nil)
+	if err != nil {
+		log.Printf("[分流规则] %v", err)
+		idx = newRouteIndex()
+		if idx.add(s.Manual, "本地规则", "") != nil {
+			return
+		}
+	}
+	r.routes.Store(idx)
+}
 func (r *Router) setAdPreferences(domains []string, paused bool) {
 	allowed := make(map[string]bool, len(domains))
 	for _, d := range domains {
@@ -102,6 +118,9 @@ func (r *Router) filter(target string) filterDecision {
 	host = strings.TrimSuffix(strings.ToLower(host), ".")
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	if h := r.routes.Load().match(host); h.action == "REJECT" {
+		return filterDecision{true, "分流规则", h.rule, 0}
+	}
 	for _, s := range r.blockSuffixes {
 		if host == s || strings.HasSuffix(host, "."+s) {
 			return filterDecision{true, "本地拦截规则", s, 0}
@@ -127,6 +146,11 @@ func (r *Router) ShouldDirect(target string) bool {
 	if err != nil {
 		host = target
 	}
+	if !r.globalMode.Load() {
+		if h := r.routes.Load().match(host); h.order != 0 {
+			return h.action == "DIRECT"
+		}
+	}
 	if ip := net.ParseIP(host); ip != nil {
 		for _, n := range r.privateNets {
 			if n.Contains(ip) {
@@ -149,6 +173,25 @@ func (r *Router) ShouldDirect(target string) bool {
 	return false
 }
 
+func (r *Router) directFor(target string, client net.Conn, cm *ClientMux) (bool, error) {
+	if r == nil {
+		return false, nil
+	}
+	if sel := r.loopback.Load(); sel != nil && client != nil {
+		host, _, err := net.SplitHostPort(target)
+		if err != nil {
+			host = target
+		}
+		if strings.EqualFold(host, "localhost") || net.ParseIP(strings.Trim(host, "[]")).IsLoopback() {
+			matched, err := (*sel)(client)
+			return !matched, err
+		}
+	}
+	if cm != nil && cm.entry != nil {
+		return false, nil
+	}
+	return r.ShouldDirect(target), nil
+}
 func dialWithRouting(target string, cm *ClientMux, router *Router) (net.Conn, error) {
 	return dialProxyTCP(target, cm, router, nil, "")
 }
@@ -157,7 +200,11 @@ func dialProxyTCP(target string, cm *ClientMux, router *Router, client net.Conn,
 	if router.ShouldBlock(target) {
 		return nil, fmt.Errorf("blocked: %s", target)
 	}
-	if (cm == nil || cm.entry == nil) && router.ShouldDirect(target) {
+	direct, err := router.directFor(target, client, cm)
+	if err != nil {
+		return nil, err
+	}
+	if direct {
 		conn, err := net.DialTimeout("tcp", target, 8*time.Second)
 		if err != nil {
 			return nil, err
@@ -410,9 +457,12 @@ func handleHTTPMixed(c net.Conn, cm *ClientMux, router *Router) {
 				req.URL.Host = req.Host
 			}
 			host := req.URL.Hostname()
-			if router.ShouldBlock(host) {
+			directRoute, routeErr := router.directFor(host, c, cm)
+			if routeErr != nil {
+				fail(w, req, routeErr)
+			} else if router.ShouldBlock(host) {
 				fail(w, req, fmt.Errorf("blocked: %s", req.Host))
-			} else if (cm == nil || cm.entry == nil) && router.ShouldDirect(host) {
+			} else if directRoute {
 				directForward.ServeHTTP(w, req)
 			} else {
 				forward.ServeHTTP(w, req)

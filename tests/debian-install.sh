@@ -61,7 +61,7 @@ echo 'PASS same-port migration, existing TLS port retention, single IPv4 dual li
 # Exercise release lookup and package integrity before any running file is touched.
 remote="$root/remote"
 dest="$root/download"
-pkg="chronomorph-debian-${name##*-}"
+pkg="slacker-debian-${name##*-}"
 mkdir -p "$remote/$pkg" "$dest"
 cp "$SCRIPT_DIR/"{cm.sh,cm-reality} "$remote/$pkg/"
 cp "$SCRIPT_DIR/$name" "$remote/$pkg/"

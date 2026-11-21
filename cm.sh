@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-GITHUB_REPO="336888/ChronoMorph"
+GITHUB_REPO="336888/Slacker"
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 
 BIN_PATH="/usr/local/bin/chronomorph"
@@ -29,8 +29,8 @@ get_status_badge() {
 
 release_binary_name() {
     case "$(uname -m)" in
-        x86_64|amd64) echo chronomorph-linux-amd64 ;;
-        aarch64|arm64) echo chronomorph-linux-arm64 ;;
+        x86_64|amd64) echo slacker-linux-amd64 ;;
+        aarch64|arm64) echo slacker-linux-arm64 ;;
         *) echo "不支持的架构 $(uname -m)" >&2; return 1 ;;
     esac
 }
@@ -65,7 +65,7 @@ github_download() {
 fetch_release_package() (
     set +x
     umask 077
-    local work=$1 name=$2 pkg="chronomorph-debian-${2##*-}" api="https://api.github.com/repos/$GITHUB_REPO/releases"
+    local work=$1 name=$2 pkg="slacker-debian-${2##*-}" api="https://api.github.com/repos/$GITHUB_REPO/releases"
     local token="${GH_TOKEN:-${GITHUB_TOKEN:-}}" file id release=latest
     if [[ -n ${3:-} ]]; then
         [[ $3 =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
@@ -74,10 +74,6 @@ fetch_release_package() (
     unset GH_TOKEN GITHUB_TOKEN
     if [[ -z $token ]] && command -v gh >/dev/null; then
         token=$(gh auth token --hostname github.com 2>/dev/null) || token=''
-    fi
-    if [[ -z $token && -t 0 ]]; then
-        read -rsp "GitHub 仓库只读 Token（输入不会显示）: " token || return 1
-        printf '\n' >&2
     fi
     if ! github_download "$api/$release" "$work/release.json" application/vnd.github+json "$token"; then
         echo "读取 GitHub Release 失败。私有仓库需要该仓库 Contents 读取权限；也可从完整离线包内运行 cm.sh。" >&2
@@ -113,6 +109,10 @@ install_release() (
     check_root
     local name package work
     name=$(release_binary_name) || exit 1
+    if ! is_local_package "$name" && is_local_package "chronomorph-linux-${name##*-}" ; then
+        do_install "chronomorph-linux-${name##*-}"
+        exit
+    fi
     if is_local_package "$name"; then
         do_install
         exit
@@ -125,7 +125,7 @@ install_release() (
     trap 'rm -rf -- "$work"' EXIT
     fetch_release_package "$work" "$name" || exit 1
     unset GH_TOKEN GITHUB_TOKEN
-    package="$work/chronomorph-debian-${name##*-}"
+    package="$work/slacker-debian-${name##*-}"
     # Use the installer shipped with these binaries, including future migrations.
     bash "$package/cm.sh" --install
 )
@@ -148,7 +148,7 @@ prepare_config_dir() {
 }
 
 gen_share_link() {
-    local key="$1" name="${2:-ChronoMorph}" tls_port=${3:-0} tls_pin=${4:-} udp_port=${5:-0} web_name=${6:-} web_port=${7:-0} only=${8:-false} reality_node=${9:-null} ip4 ip6
+    local key="$1" name="${2:-Slacker}" tls_port=${3:-0} tls_pin=${4:-} udp_port=${5:-0} web_name=${6:-} web_port=${7:-0} only=${8:-false} reality_node=${9:-null} ip4 ip6
     if [[ -n ${CM_PUBLIC_IP:-} ]]; then
         ip4=$CM_PUBLIC_IP; ip6=$CM_PUBLIC_IP
     else
@@ -289,7 +289,7 @@ do_install() (
     local name work mk listen version file
     exec 9>"$DEPLOY_LOCK"
     flock -n 9 || { echo "已有安装任务在运行" >&2; exit 1; }
-    name=$(release_binary_name)
+    name=${1:-$(release_binary_name)}
     mkdir -p "$(dirname "$BIN_PATH")"
     work=$(mktemp -d "$(dirname "$BIN_PATH")/.chronomorph-install.XXXXXXXX")
     trap '[[ -f "$work/keep-backup" ]] || rm -rf -- "$work"' EXIT
@@ -300,7 +300,7 @@ do_install() (
     done
     "$work/cm-reality" version
     version=$("$work/$name" version)
-    [[ $version == "ChronoMorph v"* ]] || { echo "程序版本信息无效" >&2; exit 1; }
+    [[ $version == "Slacker v"* ]] || { echo "程序版本信息无效" >&2; exit 1; }
     echo "$version"
     apt-get update -qq
     apt-get install -y -qq nftables chrony curl jq ca-certificates >/dev/null
@@ -348,7 +348,7 @@ EOF
     fi
     cat > "$SERVICE_FILE" <<EOF
 [Unit]
-Description=ChronoMorph RTP-Mimicry Hopping Server
+Description=Slacker Server
 After=network-online.target nftables.service chrony.service
 Wants=network-online.target
 
@@ -374,6 +374,7 @@ EOF
     systemctl daemon-reload
     systemctl enable chronomorph
     activate_package "$work" "$name"
+    if [[ ! -e /usr/local/bin/slacker && ! -L /usr/local/bin/slacker ]]; then ln -s "$BIN_PATH" /usr/local/bin/slacker; fi
     echo -e "${GREEN}部署完成！随时输入 cm 打开管理菜单。${PLAIN}"
     show_links
 )
@@ -540,6 +541,7 @@ do_uninstall() {
     rm -f "$SERVICE_FILE" "$NFT_FILE" /etc/sysctl.d/99-chronomorph.conf
     systemctl daemon-reload
     nft delete table inet chronomorph 2>/dev/null || true
+    if [[ -L /usr/local/bin/slacker && $(readlink /usr/local/bin/slacker) == "$BIN_PATH" ]]; then rm -f /usr/local/bin/slacker; fi
     rm -rf "$BIN_PATH" "$(dirname "$BIN_PATH")/cm-reality" "$CFG_DIR" "$MGR_PATH"
     echo -e "${GREEN}已卸载干净。${PLAIN}"; exit 0
 }
@@ -629,7 +631,7 @@ main_menu() {
     check_root
     while true; do
         clear
-        echo -e "${CYAN}=== ChronoMorph Debian 管理面板 [$(get_status_badge)] ===${PLAIN}"
+        echo -e "${CYAN}=== Slacker Debian 管理面板 [$(get_status_badge)] ===${PLAIN}"
         echo "1. 一键安装或升级    2. 状态与跳频排障  3. 实时日志"
         echo "4. 导出分享链接    5. 实时流量看板    6. 热重载配置"
         echo "7. 打包备份配置    8. 彻底卸载    9. 设置双协议 TCP 端口"

@@ -4,8 +4,8 @@ import (
 	"context"
 	"net"
 
-	"chronomorph/internal/bridgeconfig"
-	"chronomorph/internal/realitytransport"
+	"slacker/internal/bridgeconfig"
+	"slacker/internal/realitytransport"
 )
 
 func checkRealitySupport() error { return nil }

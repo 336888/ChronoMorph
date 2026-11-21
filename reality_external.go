@@ -15,8 +15,8 @@ import (
 	"path/filepath"
 	"sync"
 
-	"chronomorph/internal/bridgeconfig"
-	"chronomorph/internal/realitytransport"
+	"slacker/internal/bridgeconfig"
+	"slacker/internal/realitytransport"
 )
 
 func bridgePath() (string, error) {

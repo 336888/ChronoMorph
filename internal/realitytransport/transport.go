@@ -9,7 +9,7 @@ import (
 	"net"
 	"time"
 
-	"chronomorph/internal/bridgeconfig"
+	"slacker/internal/bridgeconfig"
 
 	goreality "github.com/xtls/reality"
 	xnet "github.com/xtls/xray-core/common/net"
