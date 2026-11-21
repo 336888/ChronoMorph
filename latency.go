@@ -60,10 +60,10 @@ func MeasureTunnelLatency(cm *ClientMux) (int64, error) {
 		if err == nil {
 			return time.Since(start).Milliseconds(), nil
 		}
+		if (cm.tlsNode.UDPPort != 0 || cm.tlsConfig != nil) && attempt == 0 && cm.discardSilentPath(sess, sent) {
+			continue
+		}
 		if cm.tlsNode.UDPPort != 0 {
-			if attempt == 0 && cm.discardSilentPath(sess, sent) {
-				continue
-			}
 			return -1, fmt.Errorf("双协议节点探测失败: %w", err)
 		}
 		// v1.0.0 closes a stream when it receives an unknown command.

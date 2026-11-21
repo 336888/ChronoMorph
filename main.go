@@ -404,6 +404,7 @@ type ClientMux struct {
 	udpPath         *RTPPacketConn
 	tcpPath         *tlsMeterConn
 	preferUDP       bool
+	retryFirst      int32 // one-shot preference after authenticated traffic stops on a dual node
 	activeTransport atomic.Int32
 	dialMode        byte
 	retryAfter      time.Time
@@ -496,8 +497,13 @@ func (cm *ClientMux) ensureSessionLocked() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	cm.dialDone, cm.cancelDial = done, cancel
+	firstTCP := !cm.preferUDP
+	if cm.retryFirst != 0 {
+		firstTCP = cm.retryFirst == transportTCP
+		cm.retryFirst = 0
+	}
 	cm.mu.Unlock()
-	path, err := cm.connectTransport(ctx)
+	path, err := cm.connectTransport(ctx, firstTCP)
 	cancel()
 	cm.mu.Lock()
 	if cm.dialDone != done {
@@ -511,9 +517,9 @@ func (cm *ClientMux) ensureSessionLocked() error {
 		return err
 	}
 	cm.sess, cm.udpPath, cm.tcpPath, cm.dialMode = path.session, path.udp, path.tcp, path.mode
-	transport := int32(1)
+	transport := int32(transportUDP)
 	if path.tcp != nil {
-		transport = 2
+		transport = transportTCP
 	}
 	cm.activeTransport.Store(transport)
 	cm.lastDialErr, cm.retryAfter = nil, time.Time{}
@@ -529,7 +535,7 @@ func (cm *ClientMux) cacheDialErrorLocked(err error) {
 func (cm *ClientMux) discardSilentPath(session *smux.Session, since time.Time) bool {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
-	if session == nil || (cm.tlsConfig != nil && cm.tlsNode.UDPPort == 0) || cm.closed {
+	if session == nil || cm.closed {
 		return false
 	}
 	if cm.sess != session {
@@ -538,11 +544,17 @@ func (cm *ClientMux) discardSilentPath(session *smux.Session, since time.Time) b
 	var last *atomic.Int64
 	if cm.udpPath != nil {
 		last = &cm.udpPath.lastReply
-	} else if cm.tcpPath != nil {
+	} else if cm.tcpPath != nil && (cm.tlsNode.UDPPort != 0 || cm.tcpPath.profile == tlsProfileReady) {
 		last = &cm.tcpPath.lastReply
 	}
 	if last == nil || last.Load() >= since.UnixNano() {
 		return false
+	}
+	if cm.tlsNode.UDPPort != 0 {
+		cm.retryFirst = transportTCP
+		if cm.tcpPath != nil {
+			cm.retryFirst = transportUDP
+		}
 	}
 	cm.closeLocked()
 	return true
@@ -633,6 +645,7 @@ func (cm *ClientMux) Close() {
 
 func (cm *ClientMux) resetLocked() {
 	cm.generation++
+	cm.retryFirst = 0
 	if cm.dialDone != nil {
 		cm.cancelDial()
 		close(cm.dialDone)
@@ -727,10 +740,10 @@ func smuxTransportConfig(conn net.Conn) *smux.Config {
 	cfg := smuxConfig()
 	if c, ok := conn.(*tlsMeterConn); ok && c.profile != tlsProfileV1 {
 		cfg.Version = 2
-		// A 200 ms path at 100 Mbit/s needs about 2.5 MB in flight.
-		// Retain room for other streams when a single receiver pauses.
-		cfg.MaxStreamBuffer = 4 << 20
-		cfg.MaxReceiveBuffer = 16 << 20
+		// smux sends credit after half the stream window is consumed.
+		// Leave a full 200 ms, 100 Mbit/s flight in the remaining half.
+		cfg.MaxStreamBuffer = 8 << 20
+		cfg.MaxReceiveBuffer = 32 << 20
 	}
 	return cfg
 }

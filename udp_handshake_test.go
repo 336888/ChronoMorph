@@ -77,3 +77,33 @@ func TestLateTimeoutKeepsReceivingSession(t *testing.T) {
 		t.Fatal("late timeout closed replacement")
 	}
 }
+
+func TestDualRecoveryTriesOtherTransportOnce(t *testing.T) {
+	for _, tcp := range []bool{false, true} {
+		a, b := net.Pipe()
+		session, err := smux.Client(a, smuxConfig())
+		if err != nil {
+			t.Fatal(err)
+		}
+		cm := ClientMux{sess: session, tlsNode: TLSNode{UDPPort: 40000}}
+		want := int32(transportUDP)
+		if tcp {
+			cm.tcpPath = &tlsMeterConn{profile: tlsProfileReady}
+		} else {
+			pc, err := net.ListenPacket("udp4", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			cm.udpPath = &RTPPacketConn{raw: pc}
+			want = transportTCP
+		}
+		if !cm.discardSilentPath(session, time.Now()) || cm.retryFirst != want {
+			t.Fatalf("silent TCP=%t: next preference %d, want %d", tcp, cm.retryFirst, want)
+		}
+		cm.Reset()
+		if cm.retryFirst != 0 {
+			t.Fatal("stale transport preference after network reset")
+		}
+		b.Close()
+	}
+}
