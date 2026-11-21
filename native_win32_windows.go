@@ -81,7 +81,7 @@ func setText(w uintptr, s string) {
 func getText(w uintptr) string {
 	n := uc("GetWindowTextLengthW", w)
 	b := make([]uint16, n+1)
-	uc("GetWindowTextW", w, n+1, uintptr(unsafe.Pointer(&b[0])))
+	uc("GetWindowTextW", w, uintptr(unsafe.Pointer(&b[0])), n+1)
 	return windows.UTF16ToString(b)
 }
 func notifyWindow(w uintptr, msg uint32) { uc("PostMessageW", w, uintptr(msg), 0, 0) }
