@@ -15,6 +15,7 @@ type NodePingResult struct {
 func (g *GUIController) BenchAllProfiles() []NodePingResult {
 	g.mu.Lock()
 	profiles := append([]NodeProfile(nil), g.cfg.Profiles...)
+	active, cfg := g.cm, *g.cfg
 	g.mu.Unlock()
 
 	results := make([]NodePingResult, len(profiles))
@@ -27,8 +28,9 @@ func (g *GUIController) BenchAllProfiles() []NodePingResult {
 			for i := range work {
 				p := profiles[i]
 				r := NodePingResult{Index: i, Name: p.Name, IP: p.ServerIP, RTTMs: -1}
-				cm, err := newNodeMux(p.ServerIP, p.MasterKey, p.TLSNode)
-				if err == nil {
+				if active != nil && p.ServerIP == cfg.ServerIP && p.MasterKey == cfg.MasterKey && p.TLSNode == cfg.TLSNode {
+					r.RTTMs, _ = MeasureTunnelLatency(active)
+				} else if cm, err := newNodeMux(p.ServerIP, p.MasterKey, p.TLSNode); err == nil {
 					r.RTTMs, _ = MeasureTunnelLatency(cm)
 					cm.Close()
 				}

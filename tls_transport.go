@@ -62,6 +62,7 @@ func issueCertificate(key ed25519.PrivateKey, usage x509.ExtKeyUsage) ([]byte, e
 }
 
 const tlsIdentityFile = "transport.pem"
+const tlsMuxV2 = "chronomorph-smux/2"
 
 // Publish the entire key pair atomically and never replace an existing server identity.
 func serverIdentity(dir string, create bool) (tls.Certificate, error) {
@@ -121,6 +122,7 @@ func clientTLSConfig(master []byte, node TLSNode) (*tls.Config, error) {
 	}
 	return &tls.Config{
 		MinVersion:   tls.VersionTLS13,
+		NextProtos:   []string{tlsMuxV2},
 		Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}},
 		// The node link pins the complete server certificate. There is no DNS name or public CA.
 		InsecureSkipVerify: true,
@@ -155,11 +157,12 @@ func (cm *ClientMux) dialTLS() (net.Conn, error) {
 		return nil, errors.New("TLS 服务端未确认客户端身份，请检查节点密钥和配额")
 	}
 	_ = conn.SetReadDeadline(time.Time{})
-	return &tlsMeterConn{Conn: conn}, nil
+	return &tlsMeterConn{Conn: conn, muxV2: conn.ConnectionState().NegotiatedProtocol == tlsMuxV2}, nil
 }
 
 type tlsMeterConn struct {
 	net.Conn
+	muxV2 bool
 	users *MultiUserEngine
 	user  *UserEntry
 }
@@ -225,6 +228,7 @@ func acceptTLS(raw net.Conn, cert tls.Certificate, users *MultiUserEngine) {
 	_ = raw.SetDeadline(time.Now().Add(6 * time.Second))
 	var user *UserEntry
 	conn := tls.Server(raw, &tls.Config{
+		NextProtos: []string{tlsMuxV2},
 		MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{cert},
 		ClientAuth: tls.RequireAnyClientCert, SessionTicketsDisabled: true,
 		VerifyConnection: func(cs tls.ConnectionState) error {
@@ -253,7 +257,7 @@ func acceptTLS(raw net.Conn, cert tls.Certificate, users *MultiUserEngine) {
 		return
 	}
 	_ = conn.SetDeadline(time.Time{})
-	handleServerSession(&tlsMeterConn{Conn: conn, users: users, user: user})
+	handleServerSession(&tlsMeterConn{Conn: conn, muxV2: conn.ConnectionState().NegotiatedProtocol == tlsMuxV2, users: users, user: user})
 }
 
 func checkLocalTLS(cfgPath string) error {

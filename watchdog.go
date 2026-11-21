@@ -1,72 +1,34 @@
 package main
 
-import (
-	"log"
-	"time"
-)
+import "time"
 
 func (g *GUIController) StartTunnelWatchdog(stopCh <-chan struct{}) {
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
-
-		lastWall := time.Now()
-		failCount := 0
-
+		last := time.Now()
 		for {
 			select {
 			case <-stopCh:
 				return
 			case now := <-ticker.C:
-				if now.Sub(lastWall) > 15*time.Second {
-					log.Println("[Watchdog] 检测到系统休眠唤醒，重新校准 NTP 并重建隧道...")
-					g.mu.Lock()
-					if g.running && g.cm != nil && g.cm.tlsConfig == nil {
+				g.mu.Lock()
+				cm, running := g.cm, g.running
+				g.mu.Unlock()
+				if cm != nil && running {
+					if now.Sub(last) > 15*time.Second && cm.tlsConfig == nil {
 						go SyncTimeOffset()
 					}
-					g.mu.Unlock()
-					g.resetActiveSession()
-					failCount = 0
-					lastWall = now
-					continue
-				}
-				lastWall = now
-
-				g.mu.Lock()
-				running := g.running
-				cm := g.cm
-				g.mu.Unlock()
-
-				if !running || cm == nil {
-					failCount = 0
-					continue
-				}
-
-				cm.mu.Lock()
-				closed := cm.sess != nil && cm.sess.IsClosed()
-				cm.mu.Unlock()
-
-				if closed {
-					failCount++
-					if failCount >= 2 {
-						log.Println("[Watchdog] 检测到会话断开，自动重建连接...")
-						g.resetActiveSession()
-						failCount = 0
+					// Test and remove the same closed session under one lock.
+					// A delayed tick alone says nothing about transport health.
+					cm.mu.Lock()
+					if cm.sess != nil && cm.sess.IsClosed() {
+						cm.closeLocked()
 					}
-				} else {
-					failCount = 0
+					cm.mu.Unlock()
 				}
+				last = now
 			}
 		}
 	}()
-}
-
-func (g *GUIController) resetActiveSession() {
-	g.mu.Lock()
-	cm := g.cm
-	g.mu.Unlock()
-	if cm == nil {
-		return
-	}
-	cm.Reset()
 }

@@ -167,7 +167,7 @@ type RTPPacketConn struct {
 	multiEng  *MultiUserEngine
 	guard     *AbuseGuard
 	lastPort  atomic.Int32
-	peerUser  sync.Map // addr string -> *UserEntry
+	peers     udpPeers
 }
 
 func NewClientRTPPacketConn(raw net.PacketConn, serverIP net.IP, engine *ChronoPacketEngine) *RTPPacketConn {
@@ -209,14 +209,20 @@ func (c *RTPPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
 			}
 			u, plain, err := c.multiEng.OpenPacket(rawPkt)
 			if err != nil {
-				if c.guard != nil {
+				if c.guard != nil && errors.Is(err, errUnauthenticatedPacket) {
 					c.guard.RecordBadPacket(addr)
 				}
 				continue
 			}
-			c.peerUser.Store(addr.String(), u)
-			copied := copy(p, plain)
-			return copied, addr, nil
+			ua, ok := addr.(*net.UDPAddr)
+			if !ok {
+				continue
+			}
+			peer := c.peers.receive(u, ua.AddrPort(), plain, time.Now())
+			if peer == nil {
+				continue
+			}
+			return copy(p, plain), peer, nil
 		}
 
 		plain, err := c.clientEng.OpenFromRTP(rawPkt)
@@ -247,20 +253,20 @@ func (c *RTPPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 		return len(p), err
 	}
 
-	val, ok := c.peerUser.Load(addr.String())
+	peer, ok := addr.(*udpPeer)
 	if !ok {
+		return 0, net.ErrClosed
+	}
+	dst := c.peers.destination(peer)
+	if dst == nil {
 		return len(p), nil
 	}
-	u := val.(*UserEntry)
-	if u.retired.Load() {
-		c.peerUser.CompareAndDelete(addr.String(), u)
-		return len(p), nil
-	}
+	u := peer.key.user
 	pkt, err := u.SealPacket(p)
 	if err != nil {
 		return 0, err
 	}
-	_, err = c.raw.WriteTo(pkt, addr)
+	_, err = c.raw.WriteTo(pkt, dst)
 	if err == nil {
 		u.txByte.Add(uint64(len(pkt)))
 	}

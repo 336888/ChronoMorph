@@ -157,6 +157,8 @@ type bufferedProxyConn struct {
 	reader *bufio.Reader
 }
 
+func (c *bufferedProxyConn) CloseWrite() error { return closeWrite(c.Conn) }
+
 func (c *bufferedProxyConn) Read(b []byte) (int, error) {
 	return c.reader.Read(b)
 }

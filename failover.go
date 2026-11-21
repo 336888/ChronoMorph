@@ -9,7 +9,7 @@ func (g *GUIController) StartAutoFailover(stopCh <-chan struct{}) {
 	go func() {
 		ticker := time.NewTicker(20 * time.Second)
 		defer ticker.Stop()
-
+		var observed *ClientMux
 		consecutiveFails := 0
 		for {
 			select {
@@ -17,31 +17,77 @@ func (g *GUIController) StartAutoFailover(stopCh <-chan struct{}) {
 				return
 			case <-ticker.C:
 				g.mu.Lock()
-				running := g.running
-				cm := g.cm
-				total := len(g.cfg.Profiles)
-				curIdx := g.cfg.ActiveIndex
+				running, cm, cfg := g.running, g.cm, g.cfg
 				g.mu.Unlock()
 
-				if !running || cm == nil || total < 2 || cm.tlsConfig != nil || GlobalTUN.IsActive() {
+				if !running || cm == nil || len(cfg.Profiles) < 2 || cm.tlsConfig != nil || GlobalTUN.IsActive() {
 					consecutiveFails = 0
 					continue
 				}
-
+				if observed != cm {
+					consecutiveFails = 0
+					observed = cm
+				}
 				if _, err := MeasureTunnelLatency(cm); err == nil {
 					consecutiveFails = 0
 					continue
 				}
-
 				consecutiveFails++
 				log.Printf("[Failover] 当前节点探活失败 (%d/3)", consecutiveFails)
 				if consecutiveFails >= 3 {
-					nextIdx := (curIdx + 1) % total
-					log.Printf("[Failover] 触发自动容灾，切换至备用节点 #%d...", nextIdx)
-					_ = g.SwitchProfile(nextIdx)
+					g.tryStandby(stopCh, cm, cfg)
 					consecutiveFails = 0
 				}
 			}
 		}
 	}()
+}
+
+func (g *GUIController) tryStandby(stop <-chan struct{}, active *ClientMux, snapshot *Config) {
+	start := snapshot.ActiveIndex
+	if start < 0 || start >= len(snapshot.Profiles) {
+		start = len(snapshot.Profiles) - 1
+	}
+	for offset := 1; offset <= len(snapshot.Profiles); offset++ {
+		select {
+		case <-stop:
+			return
+		default:
+		}
+		idx := (start + offset) % len(snapshot.Profiles)
+		p := snapshot.Profiles[idx]
+		if p.ServerIP == snapshot.ServerIP && p.MasterKey == snapshot.MasterKey && p.TLSNode == snapshot.TLSNode {
+			continue
+		}
+		probe, err := newNodeMux(p.ServerIP, p.MasterKey, p.TLSNode)
+		if err != nil {
+			continue
+		}
+		if _, err := MeasureTunnelLatency(probe); err != nil {
+			probe.Close()
+			continue
+		}
+		// The active node may have recovered while the other node was probed.
+		if _, err := MeasureTunnelLatency(active); err == nil {
+			probe.Close()
+			return
+		}
+		g.mu.Lock()
+		if !g.running || g.cm != active || g.cfg != snapshot || GlobalTUN.IsActive() {
+			g.mu.Unlock()
+			probe.Close()
+			return
+		}
+		cfg := *snapshot
+		cfg.ActiveIndex = idx
+		cfg.ServerIP, cfg.MasterKey, cfg.TLSNode = p.ServerIP, p.MasterKey, p.TLSNode
+		err = g.installConfigLocked(&cfg, probe)
+		g.mu.Unlock()
+		if err == nil {
+			log.Printf("[Failover] 已切换至通过探活的备用节点 #%d", idx)
+		} else {
+			log.Printf("[Failover] 切换失败: %v", err)
+		}
+		return
+	}
 }

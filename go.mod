@@ -1,14 +1,16 @@
 module chronomorph
 
-go 1.24
+go 1.24.0
+
+toolchain go1.24.13
 
 require (
 	github.com/getlantern/systray v1.2.2
 	github.com/xjasonlyu/tun2socks/v2 v2.6.0
 	github.com/xtaci/kcp-go/v5 v5.6.13
-	github.com/xtaci/smux v1.5.24
+	github.com/xtaci/smux v1.5.61
 	golang.org/x/crypto v0.38.0
-	golang.org/x/sys v0.33.0
+	golang.org/x/sys v0.41.0
 )
 
 require (
@@ -33,7 +35,9 @@ require (
 	github.com/klauspost/cpuid/v2 v2.2.6 // indirect
 	github.com/klauspost/reedsolomon v1.12.0 // indirect
 	github.com/oxtoacart/bpool v0.0.0-20190530202638-03653db5a59c // indirect
+	github.com/pion/transport/v5 v5.1.5 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
+	github.com/puzpuzpuz/xsync/v4 v4.5.0 // indirect
 	github.com/templexxx/cpu v0.1.1 // indirect
 	github.com/templexxx/xorsimd v0.4.3 // indirect
 	github.com/tjfoc/gmsm v1.4.1 // indirect
@@ -41,7 +45,7 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.0 // indirect
 	golang.org/x/net v0.40.0 // indirect
-	golang.org/x/time v0.11.0 // indirect
+	golang.org/x/time v0.14.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 	golang.zx2c4.com/wireguard v0.0.0-20250521234502-f333402bd9cb // indirect
 	gvisor.dev/gvisor v0.0.0-20250523182742-eede7a881b20 // indirect

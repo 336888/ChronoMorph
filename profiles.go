@@ -62,6 +62,11 @@ func (g *GUIController) useConfigLocked(cfg *Config) error {
 			return err
 		}
 	}
+	return g.installConfigLocked(cfg, next)
+}
+
+// next, when supplied, is owned by this method, including on error.
+func (g *GUIController) installConfigLocked(cfg *Config, next *ClientMux) error {
 	if err := SaveConfigAtomic(g.cfgPath, cfg); err != nil {
 		if next != nil {
 			next.Close()

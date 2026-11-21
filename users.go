@@ -78,13 +78,15 @@ func NewMultiUserEngine(cfgs []UserEntry) (*MultiUserEngine, error) {
 	return &MultiUserEngine{users: list}, nil
 }
 
+var errUnauthenticatedPacket = errors.New("unauthenticated UDP packet")
+
 func (m *MultiUserEngine) OpenPacket(packet []byte) (*UserEntry, []byte, error) {
 	if len(packet) < RTPHeaderLen+2+16 {
-		return nil, nil, errors.New("short packet")
+		return nil, nil, errUnauthenticatedPacket
 	}
 	rtpHdr := packet[:RTPHeaderLen]
 	if rtpHdr[1] != clientPayloadType && rtpHdr[1] != legacyPayloadType {
-		return nil, nil, errors.New("invalid packet direction")
+		return nil, nil, errUnauthenticatedPacket
 	}
 	ciphertext := packet[RTPHeaderLen:]
 	pktSSRC := binary.BigEndian.Uint32(rtpHdr[8:12])
@@ -118,5 +120,5 @@ func (m *MultiUserEngine) OpenPacket(packet []byte) (*UserEntry, []byte, error) 
 			return u, plain[2 : 2+pLen], nil
 		}
 	}
-	return nil, nil, errors.New("unknown user or auth failed")
+	return nil, nil, errUnauthenticatedPacket
 }

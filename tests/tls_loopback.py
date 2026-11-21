@@ -15,6 +15,9 @@ IP = "127.0.0.1"
 EXE = str(Path(sys.argv[1]).resolve())
 
 
+SERVER_EXE = str(Path(sys.argv[2]).resolve()) if len(sys.argv) > 2 and not sys.argv[2].startswith("--") else EXE
+
+
 def bind(kind):
     sock = socket.socket(socket.AF_INET, kind)
     sock.bind((IP, 0))
@@ -42,18 +45,26 @@ def read(sock, size):
     return bytes(data)
 
 
-def socks_connect(port):
-    sock = socket.create_connection((IP, port), timeout=7)
+def socks_connect(port, receive_buffer=None):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    if receive_buffer:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, receive_buffer)
+    sock.settimeout(7)
+    sock.connect((IP, port))
     sock.sendall(b"\x05\x01\x00")
     assert read(sock, 2) == b"\x05\x00"
     return sock
 
 
+def open_target(sock, origin_port):
+    # Local IP literals are direct. This hostname goes through the server.
+    sock.sendall(b"\x05\x01\x00\x03\x09localhost" + struct.pack(">H", origin_port))
+    return read(sock, 10)[1]
+
+
 def tcp_request(port, origin_port):
     with socks_connect(port) as sock:
-        # A name is sent to the remote server. Private IP literals have a local direct rule.
-        sock.sendall(b"\x05\x01\x00\x03\x09localhost" + struct.pack(">H", origin_port))
-        code = read(sock, 10)[1]
+        code = open_target(sock, origin_port)
         if code == 0:
             sock.sendall(b"tls-loopback")
             assert read(sock, 12) == b"tls-loopback"
@@ -85,7 +96,7 @@ with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as resources:
     client_cfg = directory / "client.json"
     client_cfg.write_text(json.dumps({"listen": f"{IP}:{client_port}", "server_ip": IP,
                                       "master_key": key, "tls_port": tls_port, "tls_pin": pin}))
-    server = subprocess.Popen([EXE, "server", "-c", str(server_cfg)])
+    server = subprocess.Popen([SERVER_EXE, "server", "-c", str(server_cfg)])
     resources.callback(stop, server)
     client = subprocess.Popen([EXE, "client", "-c", str(client_cfg)])
     resources.callback(stop, client)
@@ -116,6 +127,38 @@ with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as resources:
         udp.sendto(packet, relay)
         assert udp.recvfrom(1024)[0] == packet
     print("PASS SOCKS5 UDP over TLS with no UDP path to the server")
+
+    if "--basic" not in sys.argv:
+        with socks_connect(client_port, receive_buffer=4096) as paused:
+            assert open_target(paused, tcp.getsockname()[1]) == 0
+            writer, _ = tcp.accept()
+            with writer:
+                writer.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)
+                writer.settimeout(0.25)
+                for _ in range(512):
+                    try:
+                        writer.sendall(bytes(65536))
+                    except socket.timeout:
+                        break
+                else:
+                    raise AssertionError("paused receiver never applied backpressure")
+                threading.Thread(target=echo_tcp_once, args=(tcp,), daemon=True).start()
+                assert tcp_request(client_port, tcp.getsockname()[1]) == 0
+        print("PASS independent request while a download is paused", flush=True)
+
+        with socks_connect(client_port) as sock:
+            assert open_target(sock, tcp.getsockname()[1]) == 0
+            origin_conn, _ = tcp.accept()
+            with origin_conn:
+                origin_conn.settimeout(5)
+                sock.sendall(b"request")
+                sock.shutdown(socket.SHUT_WR)
+                assert read(origin_conn, 7) == b"request" and origin_conn.recv(1) == b""
+                body = b"delayed-response" * 4096
+                origin_conn.sendall(body)
+                origin_conn.shutdown(socket.SHUT_WR)
+                assert read(sock, len(body)) == body and sock.recv(1) == b""
+        print("PASS client half-close followed by complete delayed response", flush=True)
 
     stop(server)
     assert tcp_request(client_port, tcp.getsockname()[1]) != 0

@@ -179,7 +179,7 @@ func runServer(cfgPath string) {
 
 func handleServerSession(conn net.Conn) {
 	defer conn.Close()
-	sess, err := smux.Server(conn, smuxConfig())
+	sess, err := smux.Server(conn, smuxTransportConfig(conn))
 	if err != nil {
 		return
 	}
@@ -306,7 +306,7 @@ func (cm *ClientMux) OpenStream() (*smux.Stream, error) {
 	if err != nil {
 		return nil, err
 	}
-	sess, err := smux.Client(conn, smuxConfig())
+	sess, err := smux.Client(conn, smuxTransportConfig(conn))
 	if err != nil {
 		_ = conn.Close()
 		cm.closeLocked()
@@ -417,18 +417,38 @@ func smuxConfig() *smux.Config {
 	return cfg
 }
 
+func smuxTransportConfig(conn net.Conn) *smux.Config {
+	cfg := smuxConfig()
+	if c, ok := conn.(*tlsMeterConn); ok && c.muxV2 {
+		cfg.Version = 2
+		cfg.MaxStreamBuffer = 256 * 1024
+	}
+	return cfg
+}
+
+func closeWrite(dst io.Closer) error {
+	if half, ok := dst.(interface{ CloseWrite() error }); ok {
+		return half.CloseWrite()
+	}
+	return dst.Close()
+}
+
 func pipeBidirectional(a, b io.ReadWriteCloser) {
+	var stop sync.Once
+	abort := func() { stop.Do(func() { _ = a.Close(); _ = b.Close() }) }
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() {
+	copyTo := func(dst, src io.ReadWriteCloser) {
 		defer wg.Done()
-		_, _ = io.Copy(a, b)
-		_ = a.Close()
-	}()
-	go func() {
-		defer wg.Done()
-		_, _ = io.Copy(b, a)
-		_ = b.Close()
-	}()
+		if _, err := io.Copy(dst, src); err != nil {
+			abort()
+			return
+		}
+		if err := closeWrite(dst); err != nil {
+			abort()
+		}
+	}
+	go copyTo(a, b)
+	go copyTo(b, a)
 	wg.Wait()
 }
