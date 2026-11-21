@@ -2,7 +2,7 @@
 set -e
 
 GITHUB_REPO="336888/ChronoMorph"
-GITHUB_TOKEN=""
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 
 BIN_PATH="/usr/local/bin/chronomorph"
 MGR_PATH="/usr/local/bin/cm"
@@ -32,32 +32,71 @@ get_status_badge() {
     else echo -e "${RED}未安装${PLAIN}"; fi
 }
 
-fetch_latest_from_github() {
-    local arch bin_name api_url auth_hdr=()
+release_binary_name() {
     case "$(uname -m)" in
-        x86_64|amd64) arch="amd64" ;;
-        aarch64|arm64) arch="arm64" ;;
-        *) echo -e "${RED}不支持的架构: $(uname -m)${PLAIN}"; return 1 ;;
+        x86_64|amd64) echo chronomorph-linux-amd64 ;;
+        aarch64|arm64) echo chronomorph-linux-arm64 ;;
+        *) echo "不支持的架构 $(uname -m)" >&2; return 1 ;;
     esac
-    bin_name="chronomorph-linux-${arch}"
-    api_url="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
-    [[ -n "$GITHUB_TOKEN" ]] && auth_hdr=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
-    local rel_json bin_url sum_url tag
-    rel_json=$(curl -fsSL "${auth_hdr[@]}" "$api_url") || return 1
-    tag=$(echo "$rel_json" | jq -r '.tag_name')
-    bin_url=$(echo "$rel_json" | jq -r --arg n "$bin_name" '.assets[] | select(.name == $n) | .browser_download_url')
-    sum_url=$(echo "$rel_json" | jq -r '.assets[] | select(.name == "SHA256SUMS.txt") | .browser_download_url')
-    [[ -z "$bin_url" || "$bin_url" == "null" ]] && return 1
-    local workdir="/tmp/cm_release"
-    rm -rf "$workdir" && mkdir -p "$workdir"
-    curl -fsSL "${auth_hdr[@]}" "$bin_url" -o "${workdir}/${bin_name}"
-    if [[ -n "$sum_url" && "$sum_url" != "null" ]]; then
-        curl -fsSL "${auth_hdr[@]}" "$sum_url" -o "${workdir}/SHA256SUMS.txt"
-        (cd "$workdir" && grep " ${bin_name}$" SHA256SUMS.txt | sha256sum -c -) || return 1
+}
+
+verify_binary() {
+    local dir=$1 name=$2 sumfile=$3 line
+    line=$(awk -v name="$name" 'length($1)==64 && $1 ~ /^[[:xdigit:]]+$/ && $2==name {print $1 "  " name; n++} END{if(n!=1)exit 1}' "$sumfile") || return 1
+    (cd "$dir" && sha256sum -c - <<< "$line")
+}
+
+fetch_latest_from_github() {
+    local work=$1 name=$2 api="https://api.github.com/repos/${GITHUB_REPO}/releases"
+    local auth=() file id
+    if [[ -n ${GITHUB_TOKEN:-} ]]; then auth=(-H "Authorization: Bearer ${GITHUB_TOKEN}"); fi
+    curl --proto '=https' --proto-redir '=https' -fsSL --retry 2 "${auth[@]}" "$api/latest" -o "$work/release.json" || return 1
+    for file in "$name" SHA256SUMS.txt; do
+        id=$(jq -er --arg f "$file" '.assets[] | select(.name == $f) | .id | numbers' "$work/release.json") || return 1
+        [[ $id =~ ^[0-9]+$ ]] || return 1
+        curl --proto '=https' --proto-redir '=https' -fsSL --retry 2 "${auth[@]}" -H 'Accept: application/octet-stream' "$api/assets/$id" -o "$work/$file" || return 1
+    done
+    verify_binary "$work" "$name" "$work/SHA256SUMS.txt"
+}
+
+stage_binary() {
+    local work=$1 name=$2 dir file
+    for file in "$name" chronomorph; do
+        for dir in "$PWD" "$SCRIPT_DIR"; do
+            [[ -f "$dir/$file" && ! "$dir/$file" -ef "$BIN_PATH" ]] || continue
+            install -m 700 "$dir/$file" "$work/$name" || return 1
+            if [[ -f "$dir/SHA256SUMS.txt" ]]; then
+                verify_binary "$work" "$name" "$dir/SHA256SUMS.txt" || return 1
+            fi
+            return 0
+        done
+    done
+    if [[ -f "$BIN_PATH" && -z ${GITHUB_TOKEN:-} ]]; then
+        install -m 700 "$BIN_PATH" "$work/$name"
+    else
+        fetch_latest_from_github "$work" "$name" || {
+            echo "无法下载或校验服务端。私有仓库可直接下载并解压本架构的 Debian 离线包。" >&2
+            return 1
+        }
+        chmod 700 "$work/$name"
     fi
-    chmod 755 "${workdir}/${bin_name}"
-    mv -f "${workdir}/${bin_name}" /tmp/chronomorph_new
-    echo -e "${GREEN}已下载并校验 ${tag}${PLAIN}"
+}
+
+prepare_config_dir() {
+    local candidate=$1 backup
+    if [[ -d "$CFG_DIR" ]]; then return 0; fi
+    if [[ -e "$CFG_DIR" || -L "$CFG_DIR" ]]; then
+        if [[ ! -L "$CFG_DIR" && -f "$CFG_DIR" ]] &&
+           { cmp -s "$CFG_DIR" "$candidate" || { [[ -f "$BIN_PATH" ]] && cmp -s "$CFG_DIR" "$BIN_PATH"; }; }; then
+            backup=$(mktemp -d "${CFG_DIR}.backup.XXXXXXXX") || return 1
+            mv -T -- "$CFG_DIR" "$backup/chronomorph" || return 1
+            echo "已备份放错位置的二进制到 $backup/chronomorph"
+        else
+            echo "$CFG_DIR 已被其他文件占用，请先检查该路径。" >&2
+            return 1
+        fi
+    fi
+    install -d -m 700 "$CFG_DIR"
 }
 
 gen_share_link() {
@@ -78,23 +117,34 @@ gen_share_link() {
     return 0
 }
 
-do_install() {
+do_install() (
+    set -e
     export DEBIAN_FRONTEND=noninteractive
-    apt-get update -qq && apt-get install -y -qq nftables chrony curl jq >/dev/null
+    local name work mk listen version previous=0 was_active=0
+    exec 9>/run/lock/chronomorph-install.lock
+    flock -n 9 || { echo "已有安装任务在运行" >&2; exit 1; }
+    name=$(release_binary_name)
+    mkdir -p "$(dirname "$BIN_PATH")"
+    work=$(mktemp -d "$(dirname "$BIN_PATH")/.chronomorph-install.XXXXXXXX")
+    trap 'rm -rf -- "$work"' EXIT
+    apt-get update -qq
+    apt-get install -y -qq nftables chrony curl jq >/dev/null
+    stage_binary "$work" "$name"
+    version=$("$work/$name" version)
+    [[ $version == "ChronoMorph v"* ]] || { echo "程序版本信息无效" >&2; exit 1; }
+    echo "$version"
+    prepare_config_dir "$work/$name"
+    if [[ -L "$CFG_FILE" && ! -f "$CFG_FILE" ]]; then echo "配置符号链接无效" >&2; exit 1; fi
+    if [[ ! -e "$CFG_FILE" ]]; then
+        mk=$("$work/$name" keygen | awk '/^MasterKey:/ {print $2}')
+        [[ $mk =~ ^[[:xdigit:]]{64}$ ]]
+        (umask 077; jq -n --arg key "$mk" --arg listen ":${LISTEN_PORT}" '{listen:$listen, master_key:$key, users:[{name:"default",key:$key}]}' > "$work/server.json")
+        install -m 600 "$work/server.json" "$CFG_FILE"
+    fi
+    listen=$(jq -er '.listen | capture(":(?<port>[0-9]+)$").port' "$CFG_FILE")
+    [[ $listen =~ ^[0-9]{1,5}$ ]] && ((10#$listen >= 1 && 10#$listen <= 65535)) || { echo "服务端配置的监听端口无效" >&2; exit 1; }
+    LISTEN_PORT=$((10#$listen))
     systemctl enable --now chrony
-    if [[ ! -f "./chronomorph" && ! -f "$BIN_PATH" ]]; then
-        fetch_latest_from_github || { echo -e "${RED}请先上传 chronomorph 二进制或配置 GITHUB_REPO${PLAIN}"; return 1; }
-        mv -f /tmp/chronomorph_new ./chronomorph
-    fi
-    [[ -f "./chronomorph" ]] && install -m 755 ./chronomorph "$BIN_PATH"
-    mkdir -p "$CFG_DIR"
-    if [[ ! -f "$CFG_FILE" ]]; then
-        local mk; mk=$($BIN_PATH keygen | awk '/MasterKey:/ {print $2}')
-        cat > "$CFG_FILE" <<EOF
-{"listen":":${LISTEN_PORT}","master_key":"${mk}","users":[{"name":"default","key":"${mk}"}]}
-EOF
-        chmod 600 "$CFG_FILE"
-    fi
     cat > /etc/sysctl.d/99-chronomorph.conf <<EOF
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
@@ -104,7 +154,7 @@ net.netfilter.nf_conntrack_max = 131072
 net.netfilter.nf_conntrack_udp_timeout = 15
 net.netfilter.nf_conntrack_udp_timeout_stream = 45
 EOF
-    sysctl --system >/dev/null
+    sysctl -e -p /etc/sysctl.d/99-chronomorph.conf >/dev/null || echo "部分可选内核参数未生效" >&2
     mkdir -p /etc/nftables.d
     cat > "$NFT_FILE" <<EOF
 table inet chronomorph {
@@ -115,9 +165,13 @@ table inet chronomorph {
 }
 EOF
     grep -q 'include "/etc/nftables.d/\*.nft"' /etc/nftables.conf || echo 'include "/etc/nftables.d/*.nft"' >> /etc/nftables.conf
-    nft delete table inet chronomorph 2>/dev/null || true
-    nft -f "$NFT_FILE"
-    systemctl enable --now nftables
+    # Replace our own table in a single nft transaction.
+    if nft list table inet chronomorph >/dev/null 2>&1; then
+        echo 'delete table inet chronomorph' > "$work/apply.nft"
+    fi
+    cat "$NFT_FILE" >> "$work/apply.nft"
+    nft -f "$work/apply.nft"
+    systemctl enable nftables
     cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=ChronoMorph RTP-Mimicry Hopping Server
@@ -125,7 +179,7 @@ After=network-online.target nftables.service chrony.service
 Wants=network-online.target
 
 [Service]
-Type=simple
+Type=exec
 ExecStart=${BIN_PATH} server -c ${CFG_FILE}
 ExecReload=/bin/kill -HUP \$MAINPID
 Restart=always
@@ -145,11 +199,23 @@ WantedBy=multi-user.target
 EOF
     systemctl daemon-reload
     systemctl enable chronomorph
-    systemctl restart chronomorph
-    systemctl is-active --quiet chronomorph
+    if [[ -f "$BIN_PATH" ]]; then cp -p "$BIN_PATH" "$work/previous"; previous=1; fi
+    if systemctl is-active --quiet chronomorph; then was_active=1; fi
+    chmod 755 "$work/$name"
+    mv -fT -- "$work/$name" "$BIN_PATH"
+    if ! systemctl restart chronomorph || ! systemctl is-active --quiet chronomorph; then
+        if ((previous)); then
+            mv -fT "$work/previous" "$BIN_PATH"
+            if ((was_active)); then systemctl restart chronomorph; fi
+            echo "启动失败，已恢复先前的服务端程序。" >&2
+        else
+            echo "服务启动失败，请查看 journalctl -u chronomorph。" >&2
+        fi
+        exit 1
+    fi
     echo -e "${GREEN}部署完成！随时输入 cm 打开管理菜单。${PLAIN}"
     show_links
-}
+)
 
 show_status() {
     systemctl status chronomorph --no-pager -l | head -n 15
@@ -158,10 +224,14 @@ show_status() {
 }
 
 show_links() {
-    [[ ! -f "$CFG_FILE" ]] && return
-    jq -r '.users[] | "\(.name) \(.key)"' "$CFG_FILE" | while read -r n k; do
-        echo -e "\n${GREEN}用户: ${n}${PLAIN}"; gen_share_link "$k" "$n"
-    done
+    if [[ ! -f "$CFG_FILE" ]]; then echo "尚未安装服务端"; return 0; fi
+    local row name key
+    while IFS= read -r row; do
+        name=$(jq -r '.name' <<< "$row")
+        key=$(jq -r '.key' <<< "$row")
+        printf '\n用户 %s\n' "$name"
+        gen_share_link "$key" "$name"
+    done < <(jq -c 'if (.users // [] | length)>0 then .users[] else {name:"default",key:.master_key} end' "$CFG_FILE")
 }
 
 show_traffic_stats() {
@@ -201,4 +271,4 @@ main_menu() {
         read -rp "按回车返回..." _
     done
 }
-main_menu
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then main_menu; fi

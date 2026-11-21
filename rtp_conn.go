@@ -16,8 +16,12 @@ import (
 
 const (
 	RTPHeaderLen = 12
-	PortMin      = 20000
-	PortMax      = 50000
+	// These authenticated bytes keep the two send directions in disjoint nonce spaces.
+	legacyPayloadType = 0x60
+	clientPayloadType = 0x61
+	serverPayloadType = 0x62
+	PortMin           = 20000
+	PortMax           = 50000
 )
 
 type epochState struct {
@@ -104,7 +108,7 @@ func (e *ChronoPacketEngine) SealAsRTP(payload []byte) ([]byte, int, error) {
 	seq := uint16(e.seq.Add(1))
 	rtpHdr := make([]byte, RTPHeaderLen)
 	rtpHdr[0] = 0x80
-	rtpHdr[1] = 0x60
+	rtpHdr[1] = clientPayloadType
 	binary.BigEndian.PutUint16(rtpHdr[2:4], seq)
 	binary.BigEndian.PutUint32(rtpHdr[4:8], uint32(CalibratedNow().UnixMilli()))
 	binary.BigEndian.PutUint32(rtpHdr[8:12], st.ssrc)
@@ -125,6 +129,9 @@ func (e *ChronoPacketEngine) OpenFromRTP(packet []byte) ([]byte, error) {
 		return nil, errors.New("short packet")
 	}
 	rtpHdr := packet[:RTPHeaderLen]
+	if rtpHdr[1] != serverPayloadType && rtpHdr[1] != legacyPayloadType {
+		return nil, errors.New("invalid packet direction")
+	}
 	ciphertext := packet[RTPHeaderLen:]
 	pktSSRC := binary.BigEndian.Uint32(rtpHdr[8:12])
 	seq := binary.BigEndian.Uint16(rtpHdr[2:4])
@@ -245,6 +252,10 @@ func (c *RTPPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 		return len(p), nil
 	}
 	u := val.(*UserEntry)
+	if u.retired.Load() {
+		c.peerUser.CompareAndDelete(addr.String(), u)
+		return len(p), nil
+	}
 	pkt, err := u.SealPacket(p)
 	if err != nil {
 		return 0, err

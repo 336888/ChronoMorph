@@ -12,10 +12,12 @@ type TrafficSnapshot struct {
 	Users map[string][2]uint64 `json:"users"`
 }
 
-func StartTrafficPersistence(path string, engine *MultiUserEngine, stopCh <-chan struct{}) {
+func StartTrafficPersistence(path string, engine *MultiUserEngine, stopCh <-chan struct{}) <-chan struct{} {
 	loadTraffic(path, engine)
 
+	saved := make(chan struct{})
 	go func() {
+		defer close(saved)
 		ticker := time.NewTicker(60 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -28,6 +30,7 @@ func StartTrafficPersistence(path string, engine *MultiUserEngine, stopCh <-chan
 			}
 		}
 	}()
+	return saved
 }
 
 func loadTraffic(path string, engine *MultiUserEngine) {

@@ -8,7 +8,7 @@ on:
       tag:
         description: Version tag
         required: true
-        default: v1.0.1
+        default: v1.0.2
 
 permissions:
   contents: write
@@ -49,6 +49,7 @@ jobs:
         run: |
           go mod verify
           go test -mod=readonly -v ./...
+          bash tests/debian-install.sh
       - name: Build and verify release files
         run: |
           [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
@@ -64,6 +65,13 @@ jobs:
           build android arm64 chronomorph_android_arm64
           release/chronomorph-linux-amd64 version
           cp cm.sh setup_win.ps1 uninstall_win.ps1 client.example.json release/
+          for arch in amd64 arm64; do
+            pkg="chronomorph-debian-$arch"
+            mkdir -p "packages/$pkg"
+            cp release/cm.sh "release/chronomorph-linux-$arch" "packages/$pkg/"
+            (cd "packages/$pkg" && sha256sum cm.sh "chronomorph-linux-$arch" > SHA256SUMS.txt && sha256sum -c SHA256SUMS.txt)
+            tar -C packages -czf "release/$pkg.tar.gz" "$pkg"
+          done
           cd release
           sha256sum * > SHA256SUMS.txt
           sha256sum -c SHA256SUMS.txt

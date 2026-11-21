@@ -13,7 +13,10 @@ func TestChronoMorphCore(t *testing.T) {
 	_, _ = rand.Read(masterKey)
 
 	clientEng := NewChronoPacketEngine(masterKey)
-	serverEng := NewChronoPacketEngine(masterKey)
+	serverEng, err := NewMultiUserEngine([]UserEntry{{KeyHex: hex.EncodeToString(masterKey)}})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	orig := []byte("ChronoMorph end-to-end payload")
 	pkt, hopPort, err := clientEng.SealAsRTP(orig)
@@ -23,22 +26,39 @@ func TestChronoMorphCore(t *testing.T) {
 	if hopPort < PortMin || hopPort >= PortMax {
 		t.Fatalf("跳频端口越界: %d", hopPort)
 	}
-	if pkt[0] != 0x80 || pkt[1] != 0x60 {
+	if pkt[0] != 0x80 || pkt[1] != clientPayloadType {
 		t.Fatalf("外层 RTP 头部不合规: %x %x", pkt[0], pkt[1])
 	}
 
-	got, err := serverEng.OpenFromRTP(pkt)
+	user, got, err := serverEng.OpenPacket(pkt)
 	if err != nil || !bytes.Equal(got, orig) {
 		t.Fatalf("OpenFromRTP 失败: err=%v, got=%q", err, got)
 	}
 
-	if _, err := serverEng.OpenFromRTP(pkt); err == nil {
+	if _, _, err := serverEng.OpenPacket(pkt); err == nil {
 		t.Fatal("防重放窗口未能拦截重复数据包")
+	}
+
+	response, err := user.SealPacket(orig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response[1] == pkt[1] {
+		t.Fatal("send directions share the same nonce namespace")
+	}
+	if _, err = clientEng.OpenFromRTP(pkt); err == nil {
+		t.Fatal("client accepted its own outbound packet")
+	}
+	if _, _, err = serverEng.OpenPacket(response); err == nil {
+		t.Fatal("server accepted its own outbound packet")
+	}
+	if plain, err := clientEng.OpenFromRTP(response); err != nil || !bytes.Equal(plain, orig) {
+		t.Fatalf("invalid return packet: %v", err)
 	}
 
 	tampered := append([]byte(nil), pkt...)
 	tampered[4] ^= 0xff
-	if _, err := serverEng.OpenFromRTP(tampered); err == nil {
+	if _, _, err := serverEng.OpenPacket(tampered); err == nil {
 		t.Fatal("篡改 RTP 头部后仍意外通过了 AEAD 校验")
 	}
 }

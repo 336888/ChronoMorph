@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -14,6 +15,7 @@ type UserEntry struct {
 	LimitGB float64 `json:"limit_gb,omitempty"`
 	epochs  *EpochCache
 	replay  ReplayWindow
+	retired atomic.Bool
 	seq     atomic.Uint32
 	rxByte  atomic.Uint64
 	txByte  atomic.Uint64
@@ -27,7 +29,7 @@ func (u *UserEntry) SealPacket(payload []byte) ([]byte, error) {
 	seq := uint16(u.seq.Add(1))
 	rtpHdr := make([]byte, RTPHeaderLen)
 	rtpHdr[0] = 0x80
-	rtpHdr[1] = 0x60
+	rtpHdr[1] = serverPayloadType
 	binary.BigEndian.PutUint16(rtpHdr[2:4], seq)
 	binary.BigEndian.PutUint32(rtpHdr[4:8], uint32(CalibratedNow().UnixMilli()))
 	binary.BigEndian.PutUint32(rtpHdr[8:12], st.ssrc)
@@ -50,12 +52,18 @@ type MultiUserEngine struct {
 
 func NewMultiUserEngine(cfgs []UserEntry) (*MultiUserEngine, error) {
 	var list []*UserEntry
+	seen := make(map[string]bool, len(cfgs))
 	for i := range cfgs {
 		u := &cfgs[i]
 		raw, err := hex.DecodeString(u.KeyHex)
 		if err != nil || len(raw) != 32 {
 			return nil, errors.New("用户密钥无效: " + u.Name)
 		}
+		key := strings.ToLower(u.KeyHex)
+		if seen[key] {
+			return nil, errors.New("多名用户使用相同的密钥")
+		}
+		seen[key] = true
 		entry := &UserEntry{
 			Name:    u.Name,
 			KeyHex:  u.KeyHex,
@@ -72,6 +80,9 @@ func (m *MultiUserEngine) OpenPacket(packet []byte) (*UserEntry, []byte, error) 
 		return nil, nil, errors.New("short packet")
 	}
 	rtpHdr := packet[:RTPHeaderLen]
+	if rtpHdr[1] != clientPayloadType && rtpHdr[1] != legacyPayloadType {
+		return nil, nil, errors.New("invalid packet direction")
+	}
 	ciphertext := packet[RTPHeaderLen:]
 	pktSSRC := binary.BigEndian.Uint32(rtpHdr[8:12])
 	seq := binary.BigEndian.Uint16(rtpHdr[2:4])

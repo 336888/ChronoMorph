@@ -3,7 +3,7 @@ package main
 import "fmt"
 
 var (
-	AppVersion = "v1.0.1"
+	AppVersion = "v1.0.2"
 	BuildTime  = "dev"
 )
 

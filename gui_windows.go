@@ -5,7 +5,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"golang.org/x/sys/windows"
 	"io"
 	"log"
 	"net"
@@ -14,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
 
 type GUIController struct {
@@ -30,15 +31,18 @@ type GUIController struct {
 func (g *GUIController) StartTunnel() error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	return g.startTunnelLocked(g.cfg, false)
+}
+
+func (g *GUIController) startTunnelLocked(cfg *Config, save bool) error {
 	if g.running {
 		return nil
 	}
-	go SyncTimeOffset()
-	cm, err := NewClientMux(g.cfg.ServerIP, g.cfg.MasterKey)
+	cm, err := NewClientMux(cfg.ServerIP, cfg.MasterKey)
 	if err != nil {
 		return err
 	}
-	listen := g.cfg.Listen
+	listen := cfg.Listen
 	if listen == "" {
 		listen = "127.0.0.1:1080"
 	}
@@ -47,6 +51,15 @@ func (g *GUIController) StartTunnel() error {
 		cm.Close()
 		return err
 	}
+	if save {
+		if err := SaveConfigAtomic(g.cfgPath, cfg); err != nil {
+			_ = ln.Close()
+			cm.Close()
+			return fmt.Errorf("保存客户端配置失败: %w", err)
+		}
+	}
+	g.cfg = cfg
+	go SyncTimeOffset()
 	g.cm = cm
 	g.ln = ln
 	g.running = true
@@ -64,12 +77,17 @@ func (g *GUIController) StartTunnel() error {
 	return nil
 }
 
-func (g *GUIController) StopTunnel() {
+func (g *GUIController) StopTunnel() error {
 	GlobalTUN.StopTUN()
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.sysProxyOn {
+		if err := g.setProxyLocked(false, false); err != nil {
+			return err
+		}
+	}
 	if !g.running {
-		return
+		return nil
 	}
 	if g.ln != nil {
 		_ = g.ln.Close()
@@ -81,6 +99,25 @@ func (g *GUIController) StopTunnel() {
 	}
 	g.running = false
 	log.Println("[GUI] 加密隧道已断开")
+	return nil
+}
+
+func (g *GUIController) restartTunnel() error {
+	g.mu.Lock()
+	proxyWasOn := g.sysProxyOn
+	g.mu.Unlock()
+	if err := g.StopTunnel(); err != nil {
+		return err
+	}
+	if err := g.StartTunnel(); err != nil {
+		return err
+	}
+	if proxyWasOn {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		return g.setProxyLocked(true, g.router.IsGlobalMode())
+	}
+	return nil
 }
 
 func (g *GUIController) importProfile(p *ShareProfile) error {
@@ -110,8 +147,7 @@ func (g *GUIController) importProfile(p *ShareProfile) error {
 	g.cfg = &cfg
 	g.mu.Unlock()
 	if restart {
-		g.StopTunnel()
-		return g.StartTunnel()
+		return g.restartTunnel()
 	}
 	return nil
 }
@@ -136,6 +172,9 @@ func RunWindowsGUI(cfgPath string) {
 		return
 	}
 	log.SetOutput(AppLogs)
+	if err := restoreSystemProxy(); err != nil {
+		log.Printf("[GUI] 恢复此前的系统代理失败: %v", err)
+	}
 	cfg := &Config{Listen: "127.0.0.1:1080"}
 	if b, err := os.ReadFile(cfgPath); err == nil {
 		_ = json.Unmarshal(b, cfg)
@@ -152,10 +191,9 @@ func RunWindowsGUI(cfgPath string) {
 	ctrl.StartAutoFailover(stopCh)
 
 	cleanup := func() {
-		ctrl.StopTunnel()
-		_ = SetWindowsSystemProxy(false, "")
-		_ = SetWindowsPACProxy(false, "")
-		GlobalTUN.StopTUN()
+		if err := ctrl.StopTunnel(); err != nil {
+			log.Printf("[GUI] 退出时恢复代理失败: %v", err)
+		}
 	}
 	RegisterShutdownCleanup(cleanup)
 
@@ -196,49 +234,46 @@ func RunWindowsGUI(cfgPath string) {
 			MasterKey string `json:"master_key"`
 			Listen    string `json:"listen"`
 		}
-		_ = json.NewDecoder(r.Body).Decode(&req)
-		ctrl.mu.Lock()
-		running := ctrl.running
-		if !running {
-			ctrl.cfg.ServerIP = req.ServerIP
-			ctrl.cfg.MasterKey = req.MasterKey
-			if req.Listen != "" {
-				ctrl.cfg.Listen = req.Listen
-			}
-			_ = SaveConfigAtomic(ctrl.cfgPath, ctrl.cfg)
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "配置格式无效", http.StatusBadRequest)
+			return
 		}
-		ctrl.mu.Unlock()
+		ctrl.mu.Lock()
+		if ctrl.running {
+			ctrl.mu.Unlock()
+			if err := ctrl.StopTunnel(); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		} else {
+			cfg := *ctrl.cfg
+			cfg.ServerIP, cfg.MasterKey = req.ServerIP, req.MasterKey
+			if req.Listen != "" {
+				cfg.Listen = req.Listen
+			}
+			err := ctrl.startTunnelLocked(&cfg, true)
+			ctrl.mu.Unlock()
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
+		w.WriteHeader(200)
+	})
 
-		if running {
-			ctrl.StopTunnel()
-		} else if err := ctrl.StartTunnel(); err != nil {
+	mux.HandleFunc("/api/sysproxy", func(w http.ResponseWriter, r *http.Request) {
+		if err := ctrl.toggleSystemProxy(); err != nil {
 			http.Error(w, err.Error(), 400)
 			return
 		}
 		w.WriteHeader(200)
 	})
 
-	mux.HandleFunc("/api/sysproxy", func(w http.ResponseWriter, r *http.Request) {
-		ctrl.mu.Lock()
-		next := !ctrl.sysProxyOn
-		listen := ctrl.cfg.Listen
-		ctrl.sysProxyOn = next
-		ctrl.mu.Unlock()
-		if next {
-			if ctrl.router.IsGlobalMode() {
-				_ = SetWindowsSystemProxy(true, listen)
-			} else {
-				_ = SetWindowsPACProxy(true, "http://127.0.0.1:18080/proxy.pac")
-			}
-		} else {
-			_ = SetWindowsSystemProxy(false, "")
-			_ = SetWindowsPACProxy(false, "")
-		}
-		w.WriteHeader(200)
-	})
-
 	mux.HandleFunc("/api/mode", func(w http.ResponseWriter, r *http.Request) {
-		ctrl.router.SetGlobalMode(!ctrl.router.IsGlobalMode())
+		if err := ctrl.toggleRouteMode(); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
 		w.WriteHeader(200)
 	})
 

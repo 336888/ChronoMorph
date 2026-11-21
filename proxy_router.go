@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -171,17 +172,23 @@ func handleSocks5Mixed(c net.Conn, br *bufio.Reader, cm *ClientMux, router *Rout
 	if _, err := io.ReadFull(br, methods); err != nil {
 		return
 	}
-	_, _ = c.Write([]byte{0x05, 0x00})
+	if verN[0] != 5 || !bytes.Contains(methods, []byte{0}) {
+		_, _ = c.Write([]byte{5, 255})
+		return
+	}
+	if _, err := c.Write([]byte{5, 0}); err != nil {
+		return
+	}
 
 	var reqHdr [4]byte
 	if _, err := io.ReadFull(br, reqHdr[:]); err != nil {
 		return
 	}
-	if reqHdr[1] == 0x03 {
-		handleSocks5UDPAssociate(c, cm)
+	if reqHdr[0] != 5 || reqHdr[2] != 0 {
 		return
 	}
-	if reqHdr[1] != 0x01 {
+	if reqHdr[1] != 1 && reqHdr[1] != 3 {
+		_, _ = c.Write([]byte{5, 7, 0, 1, 0, 0, 0, 0, 0, 0})
 		return
 	}
 
@@ -217,6 +224,10 @@ func handleSocks5Mixed(c net.Conn, br *bufio.Reader, cm *ClientMux, router *Rout
 		return
 	}
 	port := binary.BigEndian.Uint16(pBuf[:])
+	if reqHdr[1] == 3 {
+		handleSocks5UDPAssociate(c, cm, router, int(port))
+		return
+	}
 	target := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 
 	remote, err := dialWithRouting(target, cm, router)

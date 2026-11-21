@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -127,4 +128,31 @@ func TestWindowsGUIProcess(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 	}
 	t.Fatal(fmt.Sprintf("Explorer did not report a tray icon for the running EXE, HRESULT 0x%x", uint32(lastHRESULT)))
+}
+
+func TestFailedDashboardStartPreservesConfig(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	path := filepath.Join(t.TempDir(), "client.json")
+	old := &Config{Listen: "127.0.0.1:0", ServerIP: "127.0.0.1", MasterKey: strings.Repeat("ab", 32)}
+	if err := SaveConfigAtomic(path, old); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctrl := &GUIController{cfgPath: path, cfg: old, router: NewRouter(nil, nil)}
+	candidate := *old
+	candidate.Listen = ln.Addr().String()
+	if err := ctrl.startTunnelLocked(&candidate, true); err == nil {
+		t.Fatal("started on an occupied port")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(before, after) || ctrl.cfg != old || ctrl.running {
+		t.Fatalf("failed start changed config, read error: %v", err)
+	}
 }

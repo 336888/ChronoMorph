@@ -6,24 +6,18 @@ import (
 	"io"
 	"net"
 	"sync/atomic"
-	"time"
 
 	"github.com/xtaci/smux"
 )
 
-func handleSocks5UDPAssociate(tcpConn net.Conn, cm *ClientMux) {
-	udpPC, err := net.ListenPacket("udp", "127.0.0.1:0")
+func handleSocks5UDPAssociate(tcpConn net.Conn, cm *ClientMux, router *Router, requestedPort int) {
+	local := tcpConn.LocalAddr().(*net.TCPAddr)
+	peerIP := tcpConn.RemoteAddr().(*net.TCPAddr).IP
+	udpPC, err := net.ListenUDP("udp", &net.UDPAddr{IP: local.IP, Zone: local.Zone})
 	if err != nil {
 		return
 	}
 	defer udpPC.Close()
-
-	localAddr := udpPC.LocalAddr().(*net.UDPAddr)
-	resp := []byte{0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0, 0}
-	binary.BigEndian.PutUint16(resp[8:10], uint16(localAddr.Port))
-	if _, err := tcpConn.Write(resp); err != nil {
-		return
-	}
 
 	stream, err := cm.OpenStream()
 	if err != nil {
@@ -40,8 +34,18 @@ func handleSocks5UDPAssociate(tcpConn net.Conn, cm *ClientMux) {
 		_ = stream.Close()
 	}()
 
+	reply := packSocks5UDP(udpPC.LocalAddr().String(), nil)
+	if reply == nil {
+		return
+	}
+	reply[0] = 5
+	if _, err = tcpConn.Write(reply); err != nil {
+		return
+	}
 	var clientUDPAddr atomic.Pointer[net.UDPAddr]
 	go func() {
+		defer udpPC.Close()
+		defer tcpConn.Close()
 		for {
 			target, payload, err := readUDPFramed(stream)
 			peer := clientUDPAddr.Load()
@@ -56,15 +60,21 @@ func handleSocks5UDPAssociate(tcpConn net.Conn, cm *ClientMux) {
 
 	buf := make([]byte, 65535)
 	for {
-		n, addr, err := udpPC.ReadFrom(buf)
+		n, addr, err := udpPC.ReadFromUDP(buf)
 		if err != nil {
 			return
 		}
-		clientUDPAddr.Store(addr.(*net.UDPAddr))
-		target, payload, ok := unpackSocks5UDP(buf[:n])
-		if !ok {
+		if !addr.IP.Equal(peerIP) || (requestedPort != 0 && addr.Port != requestedPort) {
 			continue
 		}
+		if peer := clientUDPAddr.Load(); peer != nil && peer.Port != addr.Port {
+			continue
+		}
+		target, payload, ok := unpackSocks5UDP(buf[:n])
+		if !ok || router.ShouldBlock(target) {
+			continue
+		}
+		clientUDPAddr.CompareAndSwap(nil, addr)
 		if err := writeUDPFramed(stream, target, payload); err != nil {
 			return
 		}
@@ -82,7 +92,6 @@ func handleServerUDPStream(stream *smux.Stream) {
 	go func() {
 		buf := make([]byte, 65535)
 		for {
-			_ = pc.SetReadDeadline(time.Now().Add(60 * time.Second))
 			n, addr, err := pc.ReadFrom(buf)
 			if err != nil {
 				_ = stream.Close()
@@ -143,16 +152,22 @@ func readUDPFramed(r io.Reader) (string, []byte, error) {
 }
 
 func unpackSocks5UDP(b []byte) (string, []byte, bool) {
-	if len(b) < 10 || b[2] != 0x00 {
+	if len(b) < 4 || b[0] != 0 || b[1] != 0 || b[2] != 0 {
 		return "", nil, false
 	}
 	var host string
 	var offset int
 	switch b[3] {
 	case 0x01:
+		if len(b) < 10 {
+			return "", nil, false
+		}
 		host = net.IP(b[4:8]).String()
 		offset = 8
 	case 0x03:
+		if len(b) < 5 || b[4] == 0 {
+			return "", nil, false
+		}
 		l := int(b[4])
 		if len(b) < 5+l+2 {
 			return "", nil, false

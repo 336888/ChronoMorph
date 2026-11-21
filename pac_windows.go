@@ -3,20 +3,22 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
-
-	"golang.org/x/sys/windows/registry"
 )
 
 func GeneratePAC(proxyAddr string, directDomains []string) string {
-	var quoted []string
+	domains := []string{}
 	for _, d := range directDomains {
 		if s := strings.TrimSpace(d); s != "" {
-			quoted = append(quoted, fmt.Sprintf(`"%s"`, s))
+			domains = append(domains, strings.ToLower(s))
 		}
 	}
+	list, _ := json.Marshal(domains)
+	proxy, _ := json.Marshal("PROXY " + proxyAddr + "; DIRECT")
 	return fmt.Sprintf(`function FindProxyForURL(url, host) {
   if (isPlainHostName(host) || shExpMatch(host, "*.local") ||
       isInNet(host, "10.0.0.0", "255.0.0.0") ||
@@ -25,57 +27,39 @@ func GeneratePAC(proxyAddr string, directDomains []string) string {
       isInNet(host, "127.0.0.0", "255.0.0.0")) {
     return "DIRECT";
   }
-  var directList = [%s];
+  var directList = %s;
   for (var i = 0; i < directList.length; i++) {
-    if (dnsDomainIs(host, directList[i]) || dnsDomainIs(host, "." + directList[i])) {
+    if (host.toLowerCase() === directList[i] || dnsDomainIs(host.toLowerCase(), "." + directList[i])) {
       return "DIRECT";
     }
   }
-  return "PROXY %s; DIRECT";
-}`, strings.Join(quoted, ", "), proxyAddr)
+  return %s;
+}`, list, proxy)
 }
 
-func SetWindowsSystemProxy(enable bool, proxyAddr string) error {
-	k, err := registry.OpenKey(registry.CURRENT_USER,
-		`Software\Microsoft\Windows\CurrentVersion\Internet Settings`,
-		registry.SET_VALUE)
-	if err != nil {
-		return err
+// Use the actual local listener even when its bind address is a wildcard or port 0.
+func (g *GUIController) proxyAddressLocked() string {
+	if g.ln == nil {
+		return g.cfg.Listen
 	}
-	defer k.Close()
-	if enable {
-		_ = k.DeleteValue("AutoConfigURL")
-		_ = k.SetStringValue("ProxyServer", proxyAddr)
-		return k.SetDWordValue("ProxyEnable", 1)
+	addr := g.ln.Addr().(*net.TCPAddr)
+	if addr.IP.IsUnspecified() {
+		ip := "127.0.0.1"
+		if addr.IP.To4() == nil {
+			ip = "::1"
+		}
+		return net.JoinHostPort(ip, fmt.Sprint(addr.Port))
 	}
-	return k.SetDWordValue("ProxyEnable", 0)
-}
-
-func SetWindowsPACProxy(enable bool, pacURL string) error {
-	k, err := registry.OpenKey(registry.CURRENT_USER,
-		`Software\Microsoft\Windows\CurrentVersion\Internet Settings`,
-		registry.SET_VALUE)
-	if err != nil {
-		return err
-	}
-	defer k.Close()
-	if enable {
-		_ = k.SetDWordValue("ProxyEnable", 0)
-		return k.SetStringValue("AutoConfigURL", pacURL)
-	}
-	err = k.DeleteValue("AutoConfigURL")
-	if err == registry.ErrNotExist {
-		return nil
-	}
-	return err
+	return addr.String()
 }
 
 func RegisterPACRoute(mux *http.ServeMux, ctrl *GUIController) {
 	mux.HandleFunc("/proxy.pac", func(w http.ResponseWriter, r *http.Request) {
 		ctrl.mu.Lock()
-		listen := ctrl.cfg.Listen
+		listen := ctrl.proxyAddressLocked()
 		domains := ctrl.cfg.DirectDomains
 		ctrl.mu.Unlock()
+		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Type", "application/x-ns-proxy-autoconfig")
 		_, _ = w.Write([]byte(GeneratePAC(listen, domains)))
 	})

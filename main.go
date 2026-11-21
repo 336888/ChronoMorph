@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"syscall"
@@ -50,6 +51,13 @@ func main() {
 	switch os.Args[1] {
 	case "version":
 		fmt.Println(VersionString())
+	case "restore-proxy":
+		if runtime.GOOS != "windows" {
+			os.Exit(2)
+		}
+		if err := restoreSystemProxy(); err != nil {
+			log.Fatal(err)
+		}
 	case "keygen":
 		key := make([]byte, 32)
 		_, _ = rand.Read(key)
@@ -82,10 +90,7 @@ func runServer(cfgPath string) {
 		log.Fatalf("[Server] 配置解析失败: %v", err)
 	}
 
-	users := cfg.Users
-	if len(users) == 0 && cfg.MasterKey != "" {
-		users = []UserEntry{{Name: "default", KeyHex: cfg.MasterKey}}
-	}
+	users := cfg.serverUsers()
 	multiEng, err := NewMultiUserEngine(users)
 	if err != nil {
 		log.Fatalf("[Server] 初始化用户引擎失败: %v", err)
@@ -95,7 +100,7 @@ func runServer(cfgPath string) {
 	guard := NewAbuseGuard()
 
 	WatchReloadSignal(cfgPath, multiEng)
-	StartTrafficPersistence("/etc/chronomorph/traffic.json", multiEng, stopCh)
+	trafficSaved := StartTrafficPersistence(filepath.Join(filepath.Dir(cfgPath), "traffic.json"), multiEng, stopCh)
 	StartLocalStatsAPI(multiEng, guard)
 
 	rawPC, err := net.ListenPacket("udp", cfg.Listen)
@@ -113,16 +118,23 @@ func runServer(cfgPath string) {
 	go func() {
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-		<-sig
-		close(stopCh)
+		select {
+		case <-sig:
+		case <-stopCh:
+			return
+		}
+		signal.Stop(sig)
 		_ = ln.Close()
-		os.Exit(0)
+		_ = rawPC.Close()
 	}()
 
 	for {
 		conn, err := ln.AcceptKCP()
 		if err != nil {
-			continue
+			close(stopCh)
+			_ = rawPC.Close()
+			<-trafficSaved
+			return
 		}
 		tuneKCP(conn, 1150)
 		go handleServerKCP(conn)
@@ -189,6 +201,7 @@ func handleServerStream(stream *smux.Stream) {
 }
 
 type ClientMux struct {
+	closed       bool
 	mu           sync.Mutex
 	serverIP     net.IP
 	sess         *smux.Session
@@ -212,6 +225,9 @@ func (cm *ClientMux) OpenStream() (*smux.Stream, error) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
+	if cm.closed {
+		return nil, net.ErrClosed
+	}
 	if cm.sess != nil {
 		if !cm.sess.IsClosed() {
 			if stream, err := cm.sess.OpenStream(); err == nil {
@@ -254,9 +270,16 @@ func (cm *ClientMux) OpenStream() (*smux.Stream, error) {
 	return stream, err
 }
 
+func (cm *ClientMux) Reset() {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	cm.closeLocked()
+}
+
 func (cm *ClientMux) Close() {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
+	cm.closed = true
 	cm.closeLocked()
 }
 

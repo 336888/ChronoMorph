@@ -43,7 +43,9 @@ func RunTray(ctrl *GUIController, onExit func()) {
 					running := ctrl.running
 					ctrl.mu.Unlock()
 					if running {
-						ctrl.StopTunnel()
+						if err := ctrl.StopTunnel(); err != nil {
+							log.Print(err)
+						}
 					} else {
 						if err := ctrl.StartTunnel(); err != nil {
 							log.Printf("[GUI] 启动本地代理失败: %v", err)
@@ -51,7 +53,9 @@ func RunTray(ctrl *GUIController, onExit func()) {
 						}
 					}
 				case <-mMode.ClickedCh:
-					ctrl.router.SetGlobalMode(!ctrl.router.IsGlobalMode())
+					if err := ctrl.toggleRouteMode(); err != nil {
+						log.Print(err)
+					}
 				case <-mBest.ClickedCh:
 					if res := ctrl.BenchAllProfiles(); len(res) > 0 && res[0].RTTMs >= 0 {
 						_ = ctrl.SwitchProfile(res[0].Index)

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 )
 
 type NodeProfile struct {
@@ -16,11 +17,19 @@ func SaveConfigAtomic(path string, cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0600); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".chronomorph-config-*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(b); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 func (g *GUIController) SwitchProfile(idx int) error {
@@ -30,16 +39,20 @@ func (g *GUIController) SwitchProfile(idx int) error {
 		return os.ErrInvalid
 	}
 	p := g.cfg.Profiles[idx]
-	g.cfg.ActiveIndex = idx
-	g.cfg.ServerIP = p.ServerIP
-	g.cfg.MasterKey = p.MasterKey
+	cfg := *g.cfg
+	cfg.ActiveIndex = idx
+	cfg.ServerIP = p.ServerIP
+	cfg.MasterKey = p.MasterKey
+	if err := SaveConfigAtomic(g.cfgPath, &cfg); err != nil {
+		g.mu.Unlock()
+		return err
+	}
+	g.cfg = &cfg
 	wasRunning := g.running
-	_ = SaveConfigAtomic(g.cfgPath, g.cfg)
 	g.mu.Unlock()
 
 	if wasRunning {
-		g.StopTunnel()
-		return g.StartTunnel()
+		return g.restartTunnel()
 	}
 	return nil
 }

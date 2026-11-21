@@ -5,12 +5,15 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 )
 
-type MultiUserServerConfig struct {
-	Listen string      `json:"listen"`
-	Users  []UserEntry `json:"users"`
+func (cfg *Config) serverUsers() []UserEntry {
+	if len(cfg.Users) == 0 && cfg.MasterKey != "" {
+		return []UserEntry{{Name: "default", KeyHex: cfg.MasterKey}}
+	}
+	return cfg.Users
 }
 
 func (m *MultiUserEngine) ReplaceUsers(cfgs []UserEntry) error {
@@ -19,6 +22,22 @@ func (m *MultiUserEngine) ReplaceUsers(cfgs []UserEntry) error {
 		return err
 	}
 	m.mu.Lock()
+	existing := make(map[string]*UserEntry, len(m.users))
+	for _, u := range m.users {
+		existing[strings.ToLower(u.KeyHex)] = u
+	}
+	for i, candidate := range next.users {
+		key := strings.ToLower(candidate.KeyHex)
+		if current := existing[key]; current != nil {
+			current.Name = candidate.Name
+			current.LimitGB = candidate.LimitGB
+			next.users[i] = current
+			delete(existing, key)
+		}
+	}
+	for _, removed := range existing {
+		removed.retired.Store(true)
+	}
 	m.users = next.users
 	m.mu.Unlock()
 	return nil
@@ -35,16 +54,17 @@ func WatchReloadSignal(cfgPath string, engine *MultiUserEngine) {
 				log.Printf("[Reload] 读取配置失败: %v", err)
 				continue
 			}
-			var cfg MultiUserServerConfig
+			var cfg Config
 			if err := json.Unmarshal(data, &cfg); err != nil {
 				log.Printf("[Reload] JSON 解析失败: %v", err)
 				continue
 			}
-			if err := engine.ReplaceUsers(cfg.Users); err != nil {
+			users := cfg.serverUsers()
+			if err := engine.ReplaceUsers(users); err != nil {
 				log.Printf("[Reload] 密钥校验失败，保持旧配置: %v", err)
 				continue
 			}
-			log.Printf("[Reload] 热重载成功，当前生效用户数: %d", len(cfg.Users))
+			log.Printf("[Reload] 热重载成功，当前生效用户数: %d", len(users))
 		}
 	}()
 }

@@ -64,5 +64,5 @@ func (g *GUIController) resetActiveSession() {
 	if cm == nil {
 		return
 	}
-	cm.Close()
+	cm.Reset()
 }

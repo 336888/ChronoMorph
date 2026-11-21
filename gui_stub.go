@@ -14,8 +14,9 @@ type GUIController struct {
 	sysProxyOn bool
 }
 
-func (g *GUIController) StartTunnel() error { return nil }
-func (g *GUIController) StopTunnel()        {}
+func (g *GUIController) StartTunnel() error   { return nil }
+func (g *GUIController) restartTunnel() error { return nil }
+func restoreSystemProxy() error               { return nil }
 
 type stubTUN struct{}
 
