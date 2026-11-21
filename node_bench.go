@@ -1,10 +1,8 @@
 package main
 
 import (
-	"net"
 	"sort"
 	"sync"
-	"time"
 )
 
 type NodePingResult struct {
@@ -21,18 +19,27 @@ func (g *GUIController) BenchAllProfiles() []NodePingResult {
 
 	results := make([]NodePingResult, len(profiles))
 	var wg sync.WaitGroup
-	for i, p := range profiles {
+	work := make(chan int)
+	for worker := 0; worker < min(4, len(profiles)); worker++ {
 		wg.Add(1)
-		go func(idx int, prof NodeProfile) {
+		go func() {
 			defer wg.Done()
-			results[idx] = NodePingResult{
-				Index: idx,
-				Name:  prof.Name,
-				IP:    prof.ServerIP,
-				RTTMs: probeNodeUDP(prof.ServerIP),
+			for i := range work {
+				p := profiles[i]
+				r := NodePingResult{Index: i, Name: p.Name, IP: p.ServerIP, RTTMs: -1}
+				cm, err := newNodeMux(p.ServerIP, p.MasterKey, p.TLSNode)
+				if err == nil {
+					r.RTTMs, _ = MeasureTunnelLatency(cm)
+					cm.Close()
+				}
+				results[i] = r
 			}
-		}(i, p)
+		}()
 	}
+	for i := range profiles {
+		work <- i
+	}
+	close(work)
 	wg.Wait()
 
 	sort.Slice(results, func(i, j int) bool {
@@ -45,32 +52,4 @@ func (g *GUIController) BenchAllProfiles() []NodePingResult {
 		return results[i].RTTMs < results[j].RTTMs
 	})
 	return results
-}
-
-func probeNodeUDP(ipStr string) int64 {
-	ip := net.ParseIP(ipStr)
-	if ip == nil {
-		return -1
-	}
-	network := "udp4"
-	if ip.To4() == nil {
-		network = "udp6"
-	}
-	conn, err := net.ListenPacket(network, ":0")
-	if err != nil {
-		return -1
-	}
-	defer conn.Close()
-
-	dst := &net.UDPAddr{IP: ip, Port: PortMin + 1000}
-	start := time.Now()
-	if _, err := conn.WriteTo(BuildSTUNBindingRequest(), dst); err != nil {
-		return -1
-	}
-	_ = conn.SetReadDeadline(time.Now().Add(1500 * time.Millisecond))
-	buf := make([]byte, 128)
-	if _, _, err := conn.ReadFrom(buf); err != nil {
-		return -1
-	}
-	return time.Since(start).Milliseconds()
 }

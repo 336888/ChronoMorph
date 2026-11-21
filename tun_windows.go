@@ -41,6 +41,9 @@ func (t *TUNManager) StartTUN(proxyAddr, serverIP string, cm *ClientMux) error {
 	if t.active {
 		return nil
 	}
+	if net.ParseIP(serverIP).To4() == nil {
+		return fmt.Errorf("当前 TUN 只支持 IPv4 节点；IPv6 节点请使用系统代理")
+	}
 	if !IsAdmin() {
 		return fmt.Errorf("请以管理员身份运行客户端后再启用 TUN")
 	}
@@ -76,7 +79,7 @@ func (t *TUNManager) StartTUN(proxyAddr, serverIP string, cm *ClientMux) error {
 	time.Sleep(800 * time.Millisecond)
 
 	if err := runHiddenCmd("netsh", "interface", "ip", "set", "address",
-		"name="+tunName, "static", tunIP, tunMask, tunGateway); err != nil {
+		"name="+tunName, "static", tunIP, tunMask, "none"); err != nil {
 		engine.Stop()
 		return fmt.Errorf("配置虚拟网卡失败（需管理员权限）: %v", err)
 	}
@@ -84,13 +87,22 @@ func (t *TUNManager) StartTUN(proxyAddr, serverIP string, cm *ClientMux) error {
 		engine.Stop()
 		return fmt.Errorf("配置 TUN DNS 失败: %w", err)
 	}
-	_ = runHiddenCmd("route", "add", serverIP, "mask", "255.255.255.255", gw, "metric", "5")
-	_ = runHiddenCmd("route", "add", "0.0.0.0", "mask", "128.0.0.0", tunGateway, "metric", "5")
-	_ = runHiddenCmd("route", "add", "128.0.0.0", "mask", "128.0.0.0", tunGateway, "metric", "5")
+	routes := [][]string{{serverIP, "mask", "255.255.255.255", gw}, {"0.0.0.0", "mask", "128.0.0.0", tunGateway}, {"128.0.0.0", "mask", "128.0.0.0", tunGateway}}
+	for i, route := range routes {
+		args := append([]string{"add"}, route...)
+		args = append(args, "metric", "5")
+		if err := runHiddenCmd("route", args...); err != nil {
+			for j := i - 1; j >= 0; j-- {
+				_ = runHiddenCmd("route", append([]string{"delete"}, routes[j]...)...)
+			}
+			engine.Stop()
+			return fmt.Errorf("添加 IPv4 路由 %s 失败: %w", route[0], err)
+		}
+	}
 
 	t.dns = dns
 	t.active = true
-	log.Printf("[TUN] 虚拟网卡已接管全局流量 (VPS %s 已绕过直连网关 %s)", serverIP, gw)
+	log.Printf("[TUN] 虚拟网卡已接管 IPv4 流量 (VPS %s 已绕过直连网关 %s)", serverIP, gw)
 	return nil
 }
 
@@ -103,7 +115,7 @@ func (t *TUNManager) StopTUN() {
 	_ = runHiddenCmd("route", "delete", "0.0.0.0", "mask", "128.0.0.0", tunGateway)
 	_ = runHiddenCmd("route", "delete", "128.0.0.0", "mask", "128.0.0.0", tunGateway)
 	if t.serverIP != "" {
-		_ = runHiddenCmd("route", "delete", t.serverIP)
+		_ = runHiddenCmd("route", "delete", t.serverIP, "mask", "255.255.255.255", t.origGW)
 	}
 	engine.Stop()
 	_ = t.dns.Close()

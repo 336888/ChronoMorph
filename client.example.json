@@ -4,6 +4,6 @@
   "master_key": "",
   "active_index": 0,
   "profiles": [],
-  "direct_domains": ["cn", "baidu.com", "qq.com", "taobao.com", "jd.com", "bilibili.com", "zhihu.com", "aliyun.com"],
+  "direct_domains": [],
   "block_domains": ["doubleclick.net", "googlesyndication.com", "google-analytics.com"]
 }

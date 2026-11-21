@@ -10,29 +10,42 @@ import (
 )
 
 type ShareProfile struct {
+	TLSNode
 	ServerIP  string `json:"s"`
 	MasterKey string `json:"k"`
 	Name      string `json:"n,omitempty"`
 }
 
 func EncodeShareLink(serverIP, masterKey, name string) (string, error) {
-	b, err := json.Marshal(ShareProfile{
+	return (ShareProfile{
 		ServerIP:  serverIP,
 		MasterKey: masterKey,
 		Name:      name,
-	})
+	}).encode()
+}
+
+func (p ShareProfile) encode() (string, error) {
+	if err := p.TLSNode.validate(); err != nil {
+		return "", err
+	}
+	b, err := json.Marshal(p)
 	if err != nil {
 		return "", err
 	}
-	return "cm://" + base64.RawURLEncoding.EncodeToString(b), nil
+	prefix := "cm://"
+	if p.TLSPort != 0 {
+		prefix = "cm+tls://"
+	}
+	return prefix + base64.RawURLEncoding.EncodeToString(b), nil
 }
 
 func DecodeShareLink(link string) (*ShareProfile, error) {
 	link = strings.TrimSpace(link)
-	if !strings.HasPrefix(link, "cm://") {
-		return nil, errors.New("无效链接，必须以 cm:// 开头")
+	prefix, encoded, ok := strings.Cut(link, "://")
+	if !ok || (prefix != "cm" && prefix != "cm+tls") {
+		return nil, errors.New("请输入 cm:// 或 cm+tls:// 节点链接")
 	}
-	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(link, "cm://"))
+	raw, err := base64.RawURLEncoding.DecodeString(encoded)
 	if err != nil {
 		return nil, errors.New("链接 Base64 解码失败")
 	}
@@ -45,6 +58,12 @@ func DecodeShareLink(link string) (*ShareProfile, error) {
 	}
 	if _, err := hex.DecodeString(p.MasterKey); err != nil {
 		return nil, errors.New("链接中的密钥不是十六进制")
+	}
+	if err := p.TLSNode.validate(); err != nil {
+		return nil, err
+	}
+	if (prefix == "cm+tls") != (p.TLSPort != 0) {
+		return nil, errors.New("节点类型与 TLS 参数不一致")
 	}
 	return &p, nil
 }

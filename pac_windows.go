@@ -7,34 +7,17 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"strings"
 )
 
-func GeneratePAC(proxyAddr string, directDomains []string) string {
-	domains := []string{}
-	for _, d := range directDomains {
-		if s := strings.TrimSpace(d); s != "" {
-			domains = append(domains, strings.ToLower(s))
-		}
-	}
-	list, _ := json.Marshal(domains)
-	proxy, _ := json.Marshal("PROXY " + proxyAddr + "; DIRECT")
+func GeneratePAC(proxyAddr string) string {
+	proxy, _ := json.Marshal("PROXY " + proxyAddr)
+	// Domain routing is handled behind the local listener. PAC never needs a DNS lookup.
 	return fmt.Sprintf(`function FindProxyForURL(url, host) {
-  if (isPlainHostName(host) || shExpMatch(host, "*.local") ||
-      isInNet(host, "10.0.0.0", "255.0.0.0") ||
-      isInNet(host, "172.16.0.0", "255.240.0.0") ||
-      isInNet(host, "192.168.0.0", "255.255.0.0") ||
-      isInNet(host, "127.0.0.0", "255.0.0.0")) {
+  if (url.indexOf("http://127.0.0.1:18080/") === 0 || url.indexOf("http://localhost:18080/") === 0) {
     return "DIRECT";
   }
-  var directList = %s;
-  for (var i = 0; i < directList.length; i++) {
-    if (host.toLowerCase() === directList[i] || dnsDomainIs(host.toLowerCase(), "." + directList[i])) {
-      return "DIRECT";
-    }
-  }
   return %s;
-}`, list, proxy)
+}`, proxy)
 }
 
 // Use the actual local listener even when its bind address is a wildcard or port 0.
@@ -57,10 +40,9 @@ func RegisterPACRoute(mux *http.ServeMux, ctrl *GUIController) {
 	mux.HandleFunc("/proxy.pac", func(w http.ResponseWriter, r *http.Request) {
 		ctrl.mu.Lock()
 		listen := ctrl.proxyAddressLocked()
-		domains := ctrl.cfg.DirectDomains
 		ctrl.mu.Unlock()
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Type", "application/x-ns-proxy-autoconfig")
-		_, _ = w.Write([]byte(GeneratePAC(listen, domains)))
+		_, _ = w.Write([]byte(GeneratePAC(listen)))
 	})
 }

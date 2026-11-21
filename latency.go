@@ -28,6 +28,9 @@ func MeasureTunnelLatency(cm *ClientMux) (int64, error) {
 		return time.Since(start).Milliseconds(), nil
 	}
 	// v1.0.0 closes a stream when it receives an unknown command.
+	if cm.tlsConfig != nil {
+		return -1, fmt.Errorf("TLS/TCP 服务端未响应: %w", err)
+	}
 	if errors.Is(err, io.EOF) {
 		return measureLegacyLatency(cm)
 	}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/ed25519"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -10,15 +11,16 @@ import (
 )
 
 type UserEntry struct {
-	Name    string  `json:"name"`
-	KeyHex  string  `json:"key"`
-	LimitGB float64 `json:"limit_gb,omitempty"`
-	epochs  *EpochCache
-	replay  ReplayWindow
-	retired atomic.Bool
-	seq     atomic.Uint32
-	rxByte  atomic.Uint64
-	txByte  atomic.Uint64
+	Name      string  `json:"name"`
+	KeyHex    string  `json:"key"`
+	LimitGB   float64 `json:"limit_gb,omitempty"`
+	tlsPublic ed25519.PublicKey
+	epochs    *EpochCache
+	replay    ReplayWindow
+	retired   atomic.Bool
+	seq       atomic.Uint32
+	rxByte    atomic.Uint64
+	txByte    atomic.Uint64
 }
 
 func (u *UserEntry) SealPacket(payload []byte) ([]byte, error) {
@@ -65,10 +67,11 @@ func NewMultiUserEngine(cfgs []UserEntry) (*MultiUserEngine, error) {
 		}
 		seen[key] = true
 		entry := &UserEntry{
-			Name:    u.Name,
-			KeyHex:  u.KeyHex,
-			LimitGB: u.LimitGB,
-			epochs:  NewEpochCache(raw),
+			Name:      u.Name,
+			KeyHex:    u.KeyHex,
+			LimitGB:   u.LimitGB,
+			epochs:    NewEpochCache(raw),
+			tlsPublic: tlsClientKey(raw).Public().(ed25519.PublicKey),
 		}
 		list = append(list, entry)
 	}

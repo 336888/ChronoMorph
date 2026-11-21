@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -31,7 +32,7 @@ func NewRouter(directDomains, blockDomains []string) *Router {
 	}
 	r.UpdateDirectDomains(directDomains)
 	for _, d := range blockDomains {
-		if s := strings.ToLower(strings.TrimSpace(d)); s != "" {
+		if s := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(d)), "."); s != "" {
 			r.blockSuffixes = append(r.blockSuffixes, s)
 		}
 	}
@@ -44,7 +45,7 @@ func (r *Router) UpdateDirectDomains(domains []string) {
 	}
 	var list []string
 	for _, d := range domains {
-		if s := strings.ToLower(strings.TrimSpace(d)); s != "" {
+		if s := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(d)), "."); s != "" {
 			list = append(list, s)
 		}
 	}
@@ -71,7 +72,7 @@ func (r *Router) ShouldBlock(target string) bool {
 	if err != nil {
 		host = target
 	}
-	host = strings.ToLower(host)
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	for _, s := range r.blockSuffixes {
@@ -98,10 +99,10 @@ func (r *Router) ShouldDirect(target string) bool {
 		}
 		return false
 	}
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
 	if r.globalMode.Load() {
 		return false
 	}
-	host = strings.ToLower(host)
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	for _, s := range r.directSuffixes {
@@ -129,11 +130,23 @@ func dialWithRouting(target string, cm *ClientMux, router *Router) (io.ReadWrite
 	}
 	hdr := make([]byte, 2+len(target))
 	hdr[0] = CmdTCP
+	if cm.tlsConfig != nil {
+		hdr[0] = CmdDialTCP
+		_ = stream.SetDeadline(time.Now().Add(9 * time.Second))
+	}
 	hdr[1] = byte(len(target))
 	copy(hdr[2:], target)
 	if _, err := stream.Write(hdr); err != nil {
 		_ = stream.Close()
 		return nil, err
+	}
+	if cm.tlsConfig != nil {
+		var reply [1]byte
+		if _, err := io.ReadFull(stream, reply[:]); err != nil || reply[0] != 0 {
+			_ = stream.Close()
+			return nil, errors.New("TLS 服务端未能建立目标连接")
+		}
+		_ = stream.SetDeadline(time.Time{})
 	}
 	return stream, nil
 }

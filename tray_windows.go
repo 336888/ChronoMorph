@@ -5,8 +5,6 @@ package main
 import (
 	_ "embed"
 	"log"
-	"os/exec"
-	"syscall"
 
 	"github.com/getlantern/systray"
 )
@@ -14,18 +12,12 @@ import (
 //go:embed assets/tray.ico
 var trayIcon []byte
 
-func openBrowser(url string) {
-	cmd := exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	_ = cmd.Start()
-}
-
-func RunTray(ctrl *GUIController, onExit func()) {
+func RunTray(ctrl *GUIController, showWindow, onExit func()) {
 	systray.Run(func() {
 		systray.SetIcon(trayIcon)
-		systray.SetTooltip("ChronoMorph RTP-Mimicry Tunnel")
+		systray.SetTooltip("ChronoMorph · 桌面客户端")
 
-		mOpen := systray.AddMenuItem("打开控制面板", "打开 ChronoMorph Web 面板")
+		mOpen := systray.AddMenuItem("打开主窗口", "显示 ChronoMorph 桌面窗口")
 		systray.AddSeparator()
 		mToggle := systray.AddMenuItem("连接 / 断开隧道", "快速启停加密隧道")
 		mMode := systray.AddMenuItem("切换路由模式 (分流/全局)", "实时切换智能分流与全局代理")
@@ -37,7 +29,7 @@ func RunTray(ctrl *GUIController, onExit func()) {
 			for {
 				select {
 				case <-mOpen.ClickedCh:
-					openBrowser("http://127.0.0.1:18080")
+					showWindow()
 				case <-mToggle.ClickedCh:
 					ctrl.mu.Lock()
 					running := ctrl.running
@@ -49,7 +41,7 @@ func RunTray(ctrl *GUIController, onExit func()) {
 					} else {
 						if err := ctrl.StartTunnel(); err != nil {
 							log.Printf("[GUI] 启动本地代理失败: %v", err)
-							openBrowser("http://127.0.0.1:18080")
+							showWindow()
 						}
 					}
 				case <-mMode.ClickedCh:

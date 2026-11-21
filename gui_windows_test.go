@@ -2,13 +2,13 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"fmt"
-	"io"
 	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -44,9 +44,13 @@ func TestWindowsSwitchesImportedNode(t *testing.T) {
 	}
 	defer controller.StopTunnel()
 	oldMux := controller.cm
+	originalListener := controller.ln
 	node := &ShareProfile{ServerIP: "127.0.0.2", MasterKey: strings.Repeat("02", 32), Name: "second node"}
 	if err := controller.importProfile(node); err != nil {
 		t.Fatal(err)
+	}
+	if controller.ln != originalListener {
+		t.Fatal("switch released the local proxy listener")
 	}
 	if controller.cm == oldMux || controller.cm.serverIP.String() != node.ServerIP {
 		t.Fatal("old endpoint remained active")
@@ -71,24 +75,108 @@ func TestWindowsGUIProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
-	client := &http.Client{Timeout: time.Second, Transport: &http.Transport{Proxy: nil}}
-	defer client.CloseIdleConnections()
 	deadline := time.Now().Add(25 * time.Second)
-	for {
-		res, err := client.Get("http://127.0.0.1:18080/")
-		if err == nil {
-			page, err := io.ReadAll(res.Body)
-			_ = res.Body.Close()
-			if err == nil && res.StatusCode == 200 && bytes.Contains(page, []byte("<title>ChronoMorph</title>")) {
-				break
-			}
+	var native uintptr
+	for time.Now().Before(deadline) {
+		native = existingDesktop()
+		if native != 0 && uc("IsWindowVisible", native) != 0 {
+			break
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("the Windows GUI did not open its local panel")
-		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
-	t.Log("Windows GUI executable served its dashboard")
+	if native == 0 || uc("IsWindowVisible", native) == 0 {
+		t.Fatal("native desktop window did not appear")
+	}
+	var owner uint32
+	uc("GetWindowThreadProcessId", native, ptr(&owner))
+	if owner != uint32(cmd.Process.Pid) {
+		t.Fatal("unexpected native window owner")
+	}
+	if uc("SendMessageW", native, 0x7f, 1, 0) == 0 && uc("GetClassLongPtrW", native, uintptr(^uint(13))) == 0 {
+		t.Fatal("native desktop has no window icon")
+	}
+	click := func(id int) {
+		h := uc("GetDlgItem", native, uintptr(id))
+		if h == 0 {
+			t.Fatalf("missing control %d", id)
+		}
+		uc("SendMessageW", h, 0x00f5, 0, 0)
+	}
+	click(importAction)
+	field := uc("GetDlgItem", native, linkEdit)
+	if field == 0 || uc("IsWindowVisible", field) == 0 {
+		t.Fatal("native import form did not open")
+	}
+	cert, err := serverIdentity(t.TempDir(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	master := strings.Repeat("21", 32)
+	users, err := NewMultiUserEngine([]UserEntry{{Name: "native-test", KeyHex: master}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go serveTLS(listener, cert, users)
+	profile := ShareProfile{ServerIP: "127.0.0.1", MasterKey: master, Name: "本机测试节点", TLSNode: TLSNode{TLSPort: listener.Addr().(*net.TCPAddr).Port, TLSPin: fmt.Sprintf("%x", sha256.Sum256(cert.Certificate[0]))}}
+	link, err := profile.encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	linkPtr := utf(link)
+	uc("SendMessageW", field, 0x000c, 0, ptr(linkPtr))
+	runtime.KeepAlive(linkPtr)
+	click(saveImport)
+	wait := func(label string, valid func() bool) {
+		t.Helper()
+		limit := time.Now().Add(8 * time.Second)
+		for !valid() {
+			if time.Now().After(limit) {
+				t.Fatal(label)
+			}
+			time.Sleep(70 * time.Millisecond)
+		}
+	}
+	toggle := uc("GetDlgItem", native, toggleAction)
+	controlText := func(h uintptr) string {
+		var b [128]uint16
+		uc("SendMessageW", h, 0x000d, uintptr(len(b)), ptr(&b[0]))
+		return windows.UTF16ToString(b[:])
+	}
+	wait("import did not select the TLS node", func() bool { return uc("IsWindowVisible", toggle) != 0 && controlText(toggle) == "启动连接" })
+	click(toggleAction)
+	wait("native start did not enable the local listener", func() bool { return controlText(toggle) == "断开连接" })
+	click(pingAction)
+	wait("native ping did not reach the authenticated server", func() bool { return users.users[0].txByte.Load() > 0 })
+	if path := os.Getenv("CHRONOMORPH_PREVIEW"); path != "" {
+		time.Sleep(250 * time.Millisecond)
+		if err := captureDesktopWindow(native, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	click(toggleAction)
+	wait("native stop did not release the listener", func() bool { return controlText(toggle) == "启动连接" })
+	t.Log("Native TLS node import, start, authenticated ping and stop verified")
+	uc("SendMessageW", native, 0x10, 0, 0)
+	if uc("IsWindowVisible", native) != 0 {
+		t.Fatal("close did not hide window to tray")
+	}
+	second := exec.Command(exe)
+	second.Dir = cmd.Dir
+	if err := second.Run(); err != nil {
+		t.Fatal(err)
+	}
+	for time.Now().Before(deadline) && uc("IsWindowVisible", native) == 0 {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if uc("IsWindowVisible", native) == 0 {
+		t.Fatal("second launch did not restore the original window")
+	}
+	t.Log("Native window, application icon, import form, close-to-tray and second-launch restore verified")
 	user32 := windows.NewLazySystemDLL("user32.dll")
 	if shell, _, _ := user32.NewProc("GetShellWindow").Call(); shell == 0 {
 		t.Log("No interactive Explorer shell in runner session; tray rectangle unavailable")

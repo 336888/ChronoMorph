@@ -20,7 +20,11 @@ func (g *GUIController) StartTunnelWatchdog(stopCh <-chan struct{}) {
 			case now := <-ticker.C:
 				if now.Sub(lastWall) > 15*time.Second {
 					log.Println("[Watchdog] 检测到系统休眠唤醒，重新校准 NTP 并重建隧道...")
-					go SyncTimeOffset()
+					g.mu.Lock()
+					if g.running && g.cm != nil && g.cm.tlsConfig == nil {
+						go SyncTimeOffset()
+					}
+					g.mu.Unlock()
 					g.resetActiveSession()
 					failCount = 0
 					lastWall = now

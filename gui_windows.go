@@ -5,7 +5,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -26,6 +25,7 @@ type GUIController struct {
 	router     *Router
 	running    bool
 	sysProxyOn bool
+	pacErr     error
 }
 
 func (g *GUIController) StartTunnel() error {
@@ -38,7 +38,7 @@ func (g *GUIController) startTunnelLocked(cfg *Config, save bool) error {
 	if g.running {
 		return nil
 	}
-	cm, err := NewClientMux(cfg.ServerIP, cfg.MasterKey)
+	cm, err := newNodeMux(cfg.ServerIP, cfg.MasterKey, cfg.TLSNode)
 	if err != nil {
 		return err
 	}
@@ -59,7 +59,9 @@ func (g *GUIController) startTunnelLocked(cfg *Config, save bool) error {
 		}
 	}
 	g.cfg = cfg
-	go SyncTimeOffset()
+	if cm.tlsConfig == nil {
+		go SyncTimeOffset()
+	}
 	g.cm = cm
 	g.ln = ln
 	g.running = true
@@ -70,7 +72,15 @@ func (g *GUIController) startTunnelLocked(cfg *Config, save bool) error {
 			if err != nil {
 				return
 			}
-			go handleMixedProxy(c, cm, g.router)
+			g.mu.Lock()
+			active := g.cm
+			listener := g.ln
+			g.mu.Unlock()
+			if active == nil || listener != ln {
+				_ = c.Close()
+				continue
+			}
+			go handleMixedProxy(c, active, g.router)
 		}
 	}()
 	log.Printf("[GUI] 加密隧道已启动，监听 %s", listen)
@@ -102,74 +112,55 @@ func (g *GUIController) StopTunnel() error {
 	return nil
 }
 
-func (g *GUIController) restartTunnel() error {
-	g.mu.Lock()
-	proxyWasOn := g.sysProxyOn
-	g.mu.Unlock()
-	if err := g.StopTunnel(); err != nil {
-		return err
-	}
-	if err := g.StartTunnel(); err != nil {
-		return err
-	}
-	if proxyWasOn {
-		g.mu.Lock()
-		defer g.mu.Unlock()
-		return g.setProxyLocked(true, g.router.IsGlobalMode())
-	}
-	return nil
-}
-
 func (g *GUIController) importProfile(p *ShareProfile) error {
 	g.mu.Lock()
 	cfg := *g.cfg
-	cfg.ServerIP, cfg.MasterKey = p.ServerIP, p.MasterKey
+	cfg.ServerIP, cfg.MasterKey, cfg.TLSNode = p.ServerIP, p.MasterKey, p.TLSNode
 	cfg.Profiles = append([]NodeProfile(nil), cfg.Profiles...)
 	idx := len(cfg.Profiles)
 	for i, node := range cfg.Profiles {
-		if node.ServerIP == p.ServerIP && node.MasterKey == p.MasterKey {
+		if node.ServerIP == p.ServerIP && node.MasterKey == p.MasterKey && node.TLSPort == p.TLSPort {
 			idx = i
 			break
 		}
 	}
-	node := NodeProfile{Name: p.Name, ServerIP: p.ServerIP, MasterKey: p.MasterKey}
+	node := NodeProfile{TLSNode: p.TLSNode, Name: p.Name, ServerIP: p.ServerIP, MasterKey: p.MasterKey}
 	if idx == len(cfg.Profiles) {
 		cfg.Profiles = append(cfg.Profiles, node)
 	} else {
 		cfg.Profiles[idx] = node
 	}
 	cfg.ActiveIndex = idx
-	if err := SaveConfigAtomic(g.cfgPath, &cfg); err != nil {
-		g.mu.Unlock()
-		return fmt.Errorf("保存客户端配置失败: %w", err)
-	}
-	restart := g.running && (g.cfg.ServerIP != p.ServerIP || g.cfg.MasterKey != p.MasterKey)
-	g.cfg = &cfg
-	g.mu.Unlock()
-	if restart {
-		return g.restartTunnel()
-	}
-	return nil
+	defer g.mu.Unlock()
+	return g.useConfigLocked(&cfg)
 }
 
 func RunWindowsGUI(cfgPath string) {
-	const panelURL = "http://127.0.0.1:18080"
-	ln, err := net.Listen("tcp4", "127.0.0.1:18080")
-	if err != nil {
-		client := &http.Client{Timeout: time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-		// v1.0.0 has no health endpoint. Its panel title also identifies a running instance.
-		if res, getErr := client.Get(panelURL); getErr == nil {
-			body, _ := io.ReadAll(io.LimitReader(res.Body, 16384))
-			_ = res.Body.Close()
-			if res.StatusCode == http.StatusOK && strings.Contains(string(body), "<title>ChronoMorph</title>") {
-				openBrowser(panelURL)
+	setDesktopDPI()
+	name, _ := windows.UTF16PtrFromString(`Local\ChronoMorph.Desktop.Singleton`)
+	mutex, mutexErr := windows.CreateMutex(nil, false, name)
+	if mutex != 0 {
+		defer windows.CloseHandle(mutex)
+	}
+	if mutexErr == windows.ERROR_ALREADY_EXISTS {
+		for i := 0; i < 40; i++ {
+			if hwnd := existingDesktop(); hwnd != 0 {
+				notifyWindow(hwnd, msgShow)
 				return
 			}
+			time.Sleep(50 * time.Millisecond)
 		}
-		message, _ := windows.UTF16PtrFromString(fmt.Sprintf("控制面板无法监听 127.0.0.1:18080，请关闭占用该端口的程序后重试。\n%v", err))
-		caption, _ := windows.UTF16PtrFromString("ChronoMorph")
-		_, _ = windows.MessageBox(0, message, caption, windows.MB_ICONERROR)
 		return
+	}
+	if mutexErr != nil {
+		txt, _ := windows.UTF16PtrFromString(mutexErr.Error())
+		_, _ = windows.MessageBox(0, txt, utf("ChronoMorph"), windows.MB_ICONERROR)
+		return
+	}
+	// The native window works independently of the optional PAC and compatibility API.
+	ln, pacErr := net.Listen("tcp4", "127.0.0.1:18080")
+	if ln != nil {
+		defer ln.Close()
 	}
 	log.SetOutput(AppLogs)
 	if err := restoreSystemProxy(); err != nil {
@@ -182,6 +173,7 @@ func RunWindowsGUI(cfgPath string) {
 
 	ctrl := &GUIController{
 		cfgPath: cfgPath,
+		pacErr:  pacErr,
 		cfg:     cfg,
 		router:  NewRouter(cfg.DirectDomains, cfg.BlockDomains),
 	}
@@ -210,6 +202,7 @@ func RunWindowsGUI(cfgPath string) {
 		ctrl.mu.Lock()
 		resp := map[string]any{
 			"version":       AppVersion,
+			"tls_port":      ctrl.cfg.TLSPort,
 			"running":       ctrl.running,
 			"server_ip":     ctrl.cfg.ServerIP,
 			"master_key":    ctrl.cfg.MasterKey,
@@ -289,7 +282,7 @@ func RunWindowsGUI(cfgPath string) {
 			return
 		}
 		ctrl.mu.Lock()
-		running, listen, ip, cm := ctrl.running, ctrl.cfg.Listen, ctrl.cfg.ServerIP, ctrl.cm
+		running, listen, ip, cm := ctrl.running, ctrl.proxyAddressLocked(), ctrl.cfg.ServerIP, ctrl.cm
 		ctrl.mu.Unlock()
 		if !running {
 			http.Error(w, "请先启动加密隧道", 400)
@@ -340,9 +333,9 @@ func RunWindowsGUI(cfgPath string) {
 
 	mux.HandleFunc("/api/export", func(w http.ResponseWriter, r *http.Request) {
 		ctrl.mu.Lock()
-		ip, key := ctrl.cfg.ServerIP, ctrl.cfg.MasterKey
+		p := ShareProfile{ServerIP: ctrl.cfg.ServerIP, MasterKey: ctrl.cfg.MasterKey, TLSNode: ctrl.cfg.TLSNode, Name: "ChronoMorph"}
 		ctrl.mu.Unlock()
-		link, err := EncodeShareLink(ip, key, "ChronoMorph")
+		link, err := p.encode()
 		if err != nil {
 			http.Error(w, err.Error(), 500)
 			return
@@ -364,21 +357,30 @@ func RunWindowsGUI(cfgPath string) {
 		_ = json.NewEncoder(w).Encode(CheckLatestRelease())
 	})
 
-	go func() {
-		_ = http.Serve(ln, ProtectLocalAPI(mux))
-	}()
+	if pacErr == nil {
+		go func() { _ = http.Serve(ln, ProtectLocalAPI(mux)) }()
+	} else {
+		log.Printf("[PAC] 本地 18080 端口不可用: %v", pacErr)
+	}
 
 	if cfg.ServerIP != "" && len(cfg.MasterKey) == 64 {
 		if err := ctrl.StartTunnel(); err != nil {
 			log.Printf("[GUI] 启动本地代理失败: %v", err)
 		}
 	}
-	openBrowser("http://127.0.0.1:18080")
-
-	RunTray(ctrl, func() {
+	ui, err := startDesktop(ctrl)
+	if err != nil {
 		close(stopCh)
 		cleanup()
-		_ = ln.Close()
+		text, _ := windows.UTF16PtrFromString(err.Error())
+		title, _ := windows.UTF16PtrFromString("ChronoMorph")
+		_, _ = windows.MessageBox(0, text, title, windows.MB_ICONERROR)
+		return
+	}
+	RunTray(ctrl, func() { notifyWindow(ui.hwnd, msgShow) }, func() {
+		notifyWindow(ui.hwnd, msgQuit)
+		close(stopCh)
+		cleanup()
 	})
 }
 
@@ -414,7 +416,7 @@ const guiHTML = `<!DOCTYPE html>
     <div class="title">ChronoMorph <small id="ver" style="font-size:12px;color:#6b7280"></small></div>
     <span id="badge" class="badge">已断开</span>
   </div>
-  <label>服务端 IP (UDP 20000-50000 动态跳频)</label>
+  <label>服务端 IP</label>
   <input id="server_ip" placeholder="例如 45.32.10.88">
   <label>MasterKey (64位 Hex)</label>
   <input id="master_key" type="password" placeholder="粘贴服务端生成的 MasterKey">
@@ -423,12 +425,12 @@ const guiHTML = `<!DOCTYPE html>
   <button id="toggleBtn" class="btn btn-start" onclick="toggleTunnel()">启动加密隧道</button>
   <div id="err" class="err"></div>
   <div class="stats">
-    <span>端口 <b id="port">--</b> (<span id="cd">--</span>s)</span>
+    <span>传输 <b id="port">--</b><span id="cd"></span></span>
     <span>↑ <b id="tx">0</b>K · ↓ <b id="rx">0</b>K</span>
   </div>
   <div class="row"><span>Windows 系统代理</span><button id="proxyBtn" class="pill" onclick="post('/api/sysproxy')">未开启</button></div>
   <div class="row"><span>路由模式</span><button id="modeBtn" class="pill" onclick="post('/api/mode')">智能分流</button></div>
-  <div class="row"><span>TUN 虚拟网卡 (需管理员)</span><button id="tunBtn" class="pill" onclick="post('/api/tun')">未开启</button></div>
+  <div class="row"><span>TUN 虚拟网卡 (IPv4，需管理员)</span><button id="tunBtn" class="pill" onclick="post('/api/tun')">未开启</button></div>
   <div class="row"><span>开机自启</span><button id="autoBtn" class="pill" onclick="post('/api/autostart')">已关闭</button></div>
   <div class="row">
     <span>服务端延迟: <b id="pingVal">-- ms</b></span>
@@ -469,8 +471,8 @@ async function refresh() {
     setPill('modeBtn', d.global_mode, '全局代理', '智能分流');
     setPill('tunBtn', d.tun_mode, '已开启', '未开启');
     setPill('autoBtn', d.auto_start, '已开启', '已关闭');
-    document.getElementById('port').textContent = d.active_port || '--';
-    document.getElementById('cd').textContent = d.hop_countdown ?? '--';
+    document.getElementById('port').textContent = d.tls_port ? 'TLS/TCP ' + d.tls_port : 'UDP ' + (d.active_port || '—');
+    document.getElementById('cd').textContent = d.tls_port ? '' : ' (' + d.hop_countdown + 's)';
     document.getElementById('tx').textContent = d.tx_kbps ?? 0;
     document.getElementById('rx').textContent = d.rx_kbps ?? 0;
   } catch (e) {}
@@ -495,7 +497,7 @@ async function testPing() {
   document.getElementById('err').textContent = res.ok ? '' : await res.text();
 }
 async function importLink() {
-  const link = prompt('粘贴服务端生成的 cm:// 链接：');
+  const link = prompt('粘贴服务端生成的 cm+tls:// 或 cm:// 链接');
   if (!link) return;
   const res = await fetch('/api/import', { method: 'POST', headers: H, body: JSON.stringify({ link: link.trim() }) });
   if (res.ok) editingConfig = false;
@@ -504,7 +506,7 @@ async function importLink() {
 }
 async function exportLink() {
   const res = await fetch('/api/export', { headers: H });
-  if (res.ok) { await navigator.clipboard.writeText(await res.text()); document.getElementById('err').textContent = '已复制 cm:// 链接'; }
+  if (res.ok) { await navigator.clipboard.writeText(await res.text()); document.getElementById('err').textContent = '已复制节点链接'; }
 }
 async function refreshLogs() {
   try {

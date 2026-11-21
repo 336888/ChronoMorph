@@ -23,7 +23,7 @@ func (g *GUIController) StartAutoFailover(stopCh <-chan struct{}) {
 				curIdx := g.cfg.ActiveIndex
 				g.mu.Unlock()
 
-				if !running || cm == nil || total < 2 {
+				if !running || cm == nil || total < 2 || cm.tlsConfig != nil || GlobalTUN.IsActive() {
 					consecutiveFails = 0
 					continue
 				}

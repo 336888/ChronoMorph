@@ -68,9 +68,9 @@ func TestProxyRestoresOnlyOwnedSettings(t *testing.T) {
 		t.Fatalf("user settings overwritten: %+v", current)
 	}
 }
-func TestPACQuotesAndDomainBoundaries(t *testing.T) {
-	script := GeneratePAC("127.0.0.1:1080", []string{"Example.COM", `quoted"name`})
-	if !strings.Contains(script, `var directList = ["example.com","quoted\"name"];`) || strings.Contains(script, "dnsDomainIs(host, directList[i])") {
-		t.Fatal("malformed PAC or unbounded domain suffix")
+func TestPACRoutesPublicHostsOnlyThroughLocalProxy(t *testing.T) {
+	pac := GeneratePAC("127.0.0.1:1080")
+	if !strings.Contains(pac, `return "PROXY 127.0.0.1:1080";`) || strings.Contains(pac, "; DIRECT") || strings.Contains(pac, "dnsResolve") || strings.Contains(pac, "isInNet") || strings.Count(pac, `return "DIRECT"`) != 1 {
+		t.Fatalf("unexpected PAC rules: %s", pac)
 	}
 }

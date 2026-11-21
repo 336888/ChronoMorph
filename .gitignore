@@ -1,6 +1,7 @@
 dist/
 *.exe
 *.syso
+!icon_windows_amd64.syso
 *.dll
 chronomorph
 chronomorph_linux*

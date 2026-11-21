@@ -218,6 +218,9 @@ func (g *GUIController) setProxyLocked(enable, global bool) error {
 		g.sysProxyOn = false
 		return nil
 	}
+	if !global && g.pacErr != nil {
+		return fmt.Errorf("智能分流的 PAC 端口 18080 不可用: %w", g.pacErr)
+	}
 	if !g.running || g.ln == nil {
 		return errors.New("请先启动本地代理")
 	}

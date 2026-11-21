@@ -2,6 +2,8 @@ package main
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -22,12 +24,15 @@ import (
 )
 
 const (
-	CmdTCP  byte = 0x01
-	CmdUDP  byte = 0x02
-	CmdPing byte = 0x03
+	CmdTCP     byte = 0x01
+	CmdUDP     byte = 0x02
+	CmdPing    byte = 0x03
+	CmdDialTCP byte = 0x04
 )
 
 type Config struct {
+	TLSNode
+	TLSListen     string        `json:"tls_listen,omitempty"`
 	Listen        string        `json:"listen"`
 	ServerIP      string        `json:"server_ip,omitempty"`
 	MasterKey     string        `json:"master_key,omitempty"`
@@ -58,6 +63,24 @@ func main() {
 		if err := restoreSystemProxy(); err != nil {
 			log.Fatal(err)
 		}
+	case "tls-check":
+		fs := flag.NewFlagSet("tls-check", flag.ExitOnError)
+		cfgPath := fs.String("c", "/etc/chronomorph/server.json", "server configuration")
+		_ = fs.Parse(os.Args[2:])
+		if err := checkLocalTLS(*cfgPath); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println("TLS/TCP 双向认证和服务端应答正常")
+	case "tls-identity":
+		fs := flag.NewFlagSet("tls-identity", flag.ExitOnError)
+		dir := fs.String("dir", "/etc/chronomorph", "server configuration directory")
+		create := fs.Bool("create", false, "create the identity if missing")
+		_ = fs.Parse(os.Args[2:])
+		cert, err := serverIdentity(*dir, *create)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("%x\n", sha256.Sum256(cert.Certificate[0]))
 	case "keygen":
 		key := make([]byte, 32)
 		_, _ = rand.Read(key)
@@ -115,6 +138,19 @@ func runServer(cfgPath string) {
 	}
 	log.Printf("[Server] ChronoMorph %s 已启动，监听 %s (用户数: %d)", AppVersion, cfg.Listen, len(users))
 
+	if cfg.TLSListen != "" {
+		cert, err := serverIdentity(filepath.Dir(cfgPath), false)
+		if err != nil {
+			log.Fatalf("[TLS] 无法读取服务端证书: %v", err)
+		}
+		tcpListener, err := net.Listen("tcp", cfg.TLSListen)
+		if err != nil {
+			log.Fatalf("[TLS] 无法监听 %s: %v", cfg.TLSListen, err)
+		}
+		defer tcpListener.Close()
+		go serveTLS(tcpListener, cert, multiEng)
+		log.Printf("[TLS] TLS 1.3/TCP 已启动，监听 %s", tcpListener.Addr())
+	}
 	go func() {
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
@@ -137,11 +173,11 @@ func runServer(cfgPath string) {
 			return
 		}
 		tuneKCP(conn, 1150)
-		go handleServerKCP(conn)
+		go handleServerSession(conn)
 	}
 }
 
-func handleServerKCP(conn *kcp.UDPSession) {
+func handleServerSession(conn net.Conn) {
 	defer conn.Close()
 	sess, err := smux.Server(conn, smuxConfig())
 	if err != nil {
@@ -178,7 +214,7 @@ func handleServerStream(stream *smux.Stream) {
 		handleServerUDPStream(stream)
 		return
 	}
-	if cmd[0] != CmdTCP {
+	if cmd[0] != CmdTCP && cmd[0] != CmdDialTCP {
 		return
 	}
 
@@ -193,14 +229,24 @@ func handleServerStream(stream *smux.Stream) {
 
 	targetConn, err := net.DialTimeout("tcp", string(addrBuf), 8*time.Second)
 	if err != nil {
+		if cmd[0] == CmdDialTCP {
+			_, _ = stream.Write([]byte{1})
+		}
 		return
 	}
 	defer targetConn.Close()
+	if cmd[0] == CmdDialTCP {
+		if _, err := stream.Write([]byte{0}); err != nil {
+			return
+		}
+	}
 
 	pipeBidirectional(stream, targetConn)
 }
 
 type ClientMux struct {
+	tlsConfig    *tls.Config
+	tlsNode      TLSNode
 	closed       bool
 	mu           sync.Mutex
 	serverIP     net.IP
@@ -210,6 +256,10 @@ type ClientMux struct {
 }
 
 func NewClientMux(serverIPStr, masterKeyHex string) (*ClientMux, error) {
+	return newNodeMux(serverIPStr, masterKeyHex, TLSNode{})
+}
+
+func newNodeMux(serverIPStr, masterKeyHex string, node TLSNode) (*ClientMux, error) {
 	ip := net.ParseIP(serverIPStr)
 	if ip == nil {
 		return nil, fmt.Errorf("无效的服务端 IP: %s", serverIPStr)
@@ -218,7 +268,16 @@ func NewClientMux(serverIPStr, masterKeyHex string) (*ClientMux, error) {
 	if err != nil || len(key) != 32 {
 		return nil, fmt.Errorf("MasterKey 必须是 64 位 Hex 字符串")
 	}
-	return &ClientMux{serverIP: ip, packetEngine: NewChronoPacketEngine(key)}, nil
+	if err := node.validate(); err != nil {
+		return nil, err
+	}
+	cm := &ClientMux{serverIP: ip, tlsNode: node}
+	if node.TLSPort != 0 {
+		cm.tlsConfig, err = clientTLSConfig(key, node)
+	} else {
+		cm.packetEngine = NewChronoPacketEngine(key)
+	}
+	return cm, err
 }
 
 func (cm *ClientMux) OpenStream() (*smux.Stream, error) {
@@ -237,6 +296,31 @@ func (cm *ClientMux) OpenStream() (*smux.Stream, error) {
 		cm.closeLocked()
 	}
 
+	var conn net.Conn
+	var err error
+	if cm.tlsConfig != nil {
+		conn, err = cm.dialTLS()
+	} else {
+		conn, err = cm.dialUDP()
+	}
+	if err != nil {
+		return nil, err
+	}
+	sess, err := smux.Client(conn, smuxConfig())
+	if err != nil {
+		_ = conn.Close()
+		cm.closeLocked()
+		return nil, err
+	}
+	cm.sess = sess
+	stream, err := sess.OpenStream()
+	if err != nil {
+		cm.closeLocked()
+	}
+	return stream, err
+}
+
+func (cm *ClientMux) dialUDP() (net.Conn, error) {
 	network := "udp4"
 	if cm.serverIP.To4() == nil {
 		network = "udp6"
@@ -255,19 +339,8 @@ func (cm *ClientMux) OpenStream() (*smux.Stream, error) {
 	}
 	tuneKCP(kcpConn, 1150)
 
-	sess, err := smux.Client(kcpConn, smuxConfig())
-	if err != nil {
-		_ = kcpConn.Close()
-		_ = rawPC.Close()
-		return nil, err
-	}
-	cm.sess = sess
 	cm.packetConn = rawPC
-	stream, err := sess.OpenStream()
-	if err != nil {
-		cm.closeLocked()
-	}
-	return stream, err
+	return kcpConn, nil
 }
 
 func (cm *ClientMux) Reset() {
@@ -304,8 +377,10 @@ func runHeadlessClient(cfgPath string) {
 		log.Fatalf("[Client] 配置解析失败: %v", err)
 	}
 
-	SyncTimeOffset()
-	cm, err := NewClientMux(cfg.ServerIP, cfg.MasterKey)
+	if cfg.TLSPort == 0 {
+		go SyncTimeOffset()
+	}
+	cm, err := newNodeMux(cfg.ServerIP, cfg.MasterKey, cfg.TLSNode)
 	if err != nil {
 		log.Fatalf("[Client] 初始化失败: %v", err)
 	}

@@ -100,10 +100,14 @@ prepare_config_dir() {
 }
 
 gen_share_link() {
-    local key="$1" name="${2:-ChronoMorph}" ip4 ip6
+    local key="$1" name="${2:-ChronoMorph}" tls_port=${3:-0} tls_pin=${4:-} ip4 ip6
+    if [[ -n ${CM_PUBLIC_IP:-} ]]; then
+        ip4=$CM_PUBLIC_IP; ip6=$CM_PUBLIC_IP
+    else
     ip4=$(curl -4 -fsS --max-time 4 https://ifconfig.me/ip 2>/dev/null || true)
     ip6=$(curl -6 -fsS --max-time 4 https://ifconfig.me/ip 2>/dev/null || true)
-    local ip family
+    fi
+    local ip family count=0
     for family in 4 6; do
         if [[ $family == 4 ]]; then
             ip=$ip4
@@ -112,8 +116,14 @@ gen_share_link() {
             ip=$ip6
             [[ $ip == *:* && $ip =~ ^[[:xdigit:]:.]+$ ]] || continue
         fi
-        printf '[IPv%s] cm://%s\n' "$family" "$(jq -cn --arg s "$ip" --arg k "$key" --arg n "$name-v$family" '{s:$s,k:$k,n:$n}' | base64 -w0 | tr '+/' '-_' | tr -d '=')"
+        count=$((count+1))
+        if [[ $tls_port != 0 ]]; then
+            printf '[IPv%s TLS/TCP] cm+tls://%s\n' "$family" "$(jq -cn --arg s "$ip" --arg k "$key" --arg n "$name-v$family-TLS" --argjson port "$tls_port" --arg pin "$tls_pin" '{s:$s,k:$k,n:$n,tls_port:$port,tls_pin:$pin}' | base64 -w0 | tr '+/' '-_' | tr -d '=')"
+        fi
+        printf '[IPv%s UDP] cm://%s\n' "$family" "$(jq -cn --arg s "$ip" --arg k "$key" --arg n "$name-v$family" '{s:$s,k:$k,n:$n}' | base64 -w0 | tr '+/' '-_' | tr -d '=')"
+
     done
+    if ((count==0)); then echo "未获取到公网 IP。可运行 sudo env CM_PUBLIC_IP=你的公网IP cm，再选 4 导出链接。" >&2; fi
     return 0
 }
 
@@ -225,14 +235,53 @@ show_status() {
 
 show_links() {
     if [[ ! -f "$CFG_FILE" ]]; then echo "尚未安装服务端"; return 0; fi
-    local row name key
+    local row name key listen port=0 pin=''
+    listen=$(jq -er '.tls_listen // ""' "$CFG_FILE")
+    if [[ -n $listen ]]; then
+        port=${listen##*:}
+        pin=$("$BIN_PATH" tls-identity -dir "$CFG_DIR") || return 1
+    fi
     while IFS= read -r row; do
         name=$(jq -r '.name' <<< "$row")
         key=$(jq -r '.key' <<< "$row")
         printf '\n用户 %s\n' "$name"
-        gen_share_link "$key" "$name"
+        gen_share_link "$key" "$name" "$port" "$pin"
     done < <(jq -c 'if (.users // [] | length)>0 then .users[] else {name:"default",key:.master_key} end' "$CFG_FILE")
 }
+
+enable_tls() (
+    set -e
+    [[ -f "$CFG_FILE" && -x "$BIN_PATH" ]] || { echo '请先选 1 安装或升级服务端'; return 1; }
+    local current port work pin
+    exec 9>/run/lock/chronomorph-install.lock
+    flock -n 9 || { echo '已有部署任务在运行' >&2; return 1; }
+    current=$(jq -r '.tls_listen // ""' "$CFG_FILE")
+    current=${current##*:}
+    read -rp "TLS/TCP 监听端口 [${current:-443}]: " port
+    port=${port:-${current:-443}}
+    [[ $port =~ ^[1-9][0-9]{0,4}$ ]] && ((port<=65535)) || { echo '端口无效'; return 1; }
+    pin=$("$BIN_PATH" tls-identity -create -dir "$CFG_DIR")
+    [[ $pin =~ ^[0-9a-f]{64}$ ]] || { echo '请先升级服务端程序'; return 1; }
+    work=$(mktemp -d "$CFG_DIR/.tls-config.XXXXXXXX")
+    trap 'rm -rf -- "$work"' EXIT
+    cp -p "$CFG_FILE" "$work/original"
+    (umask 077; jq --arg addr ":$port" '.tls_listen=$addr' "$CFG_FILE" > "$work/new")
+    mv -fT "$work/new" "$CFG_FILE"
+    if systemctl restart chronomorph; then
+        for _ in 1 2 3; do
+            if "$BIN_PATH" tls-check -c "$CFG_FILE"; then
+                echo "请在云安全组和主机防火墙放行 TCP $port。客户端导入下面的 cm+tls:// 链接。"
+                show_links
+                return 0
+            fi
+            sleep 1
+        done
+    fi
+    mv -fT "$work/original" "$CFG_FILE"
+    systemctl restart chronomorph
+    echo 'TCP 入口未通过验证，已恢复原配置。请检查端口是否被占用。' >&2
+    return 1
+)
 
 show_traffic_stats() {
     curl -s --max-time 2 http://127.0.0.1:40001/stats | jq . || echo -e "${RED}服务未运行${PLAIN}"
@@ -261,12 +310,12 @@ main_menu() {
         echo -e "${CYAN}=== ChronoMorph Debian 管理面板 [$(get_status_badge)] ===${PLAIN}"
         echo "1. 一键安装部署    2. 状态与跳频排障  3. 实时日志"
         echo "4. 导出分享链接    5. 实时流量看板    6. 热重载配置"
-        echo "7. 打包备份配置    8. 彻底无痕卸载    0. 退出"
-        read -rp "请选择 [0-8]: " ch
+        echo "7. 打包备份配置    8. 彻底卸载    9. 启用 TLS/TCP    0. 退出"
+        read -rp "请选择 [0-9]: " ch
         case "$ch" in
             1) do_install ;; 2) show_status ;; 3) journalctl -u chronomorph -f -n 50 || true ;;
             4) show_links ;; 5) show_traffic_stats ;; 6) systemctl reload-or-restart chronomorph ;;
-            7) do_backup ;; 8) do_uninstall ;; 0) exit 0 ;;
+            7) do_backup ;; 8) do_uninstall ;; 9) enable_tls ;; 0) exit 0 ;;
         esac
         read -rp "按回车返回..." _
     done
