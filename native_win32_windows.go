@@ -59,26 +59,35 @@ type drawItem struct {
 	data                         uintptr
 }
 
-func utf(s string) *uint16                    { p, _ := windows.UTF16PtrFromString(s); return p }
-func ptr[T any](p *T) uintptr                 { return uintptr(unsafe.Pointer(p)) }
+func utf(s string) *uint16 { p, _ := windows.UTF16PtrFromString(s); return p }
+
+//go:uintptrescapes
 func uc(name string, args ...uintptr) uintptr { r, _, _ := nUser.NewProc(name).Call(args...); return r }
+
+//go:uintptrescapes
 func gc(name string, args ...uintptr) uintptr { r, _, _ := nGdi.NewProc(name).Call(args...); return r }
+
+//go:uintptrescapes
 func kc(name string, args ...uintptr) uintptr {
 	r, _, _ := nKernel.NewProc(name).Call(args...)
 	return r
 }
-func colorRef(rgb int) uintptr    { return uintptr((rgb&255)<<16 | rgb&0xff00 | (rgb>>16)&255) }
-func setText(w uintptr, s string) { p := utf(s); uc("SetWindowTextW", w, ptr(p)); runtime.KeepAlive(p) }
+func colorRef(rgb int) uintptr { return uintptr((rgb&255)<<16 | rgb&0xff00 | (rgb>>16)&255) }
+func setText(w uintptr, s string) {
+	p := utf(s)
+	uc("SetWindowTextW", w, uintptr(unsafe.Pointer(p)))
+	runtime.KeepAlive(p)
+}
 func getText(w uintptr) string {
 	n := uc("GetWindowTextLengthW", w)
 	b := make([]uint16, n+1)
-	uc("GetWindowTextW", w, n+1, ptr(&b[0]))
+	uc("GetWindowTextW", w, n+1, uintptr(unsafe.Pointer(&b[0])))
 	return windows.UTF16ToString(b)
 }
 func notifyWindow(w uintptr, msg uint32) { uc("PostMessageW", w, uintptr(msg), 0, 0) }
 func existingDesktop() uintptr {
 	name := utf(desktopClass)
-	w := uc("FindWindowW", ptr(name), 0)
+	w := uc("FindWindowW", uintptr(unsafe.Pointer(name)), 0)
 	runtime.KeepAlive(name)
 	return w
 }
@@ -92,7 +101,7 @@ func (u *desktopUI) font(size, weight int) uintptr {
 		return f
 	}
 	family := utf("Microsoft YaHei UI")
-	f := gc("CreateFontW", uintptr(-u.px(size)), 0, 0, 0, uintptr(weight), 0, 0, 0, 1, 0, 0, 5, 0, ptr(family))
+	f := gc("CreateFontW", uintptr(-u.px(size)), 0, 0, 0, uintptr(weight), 0, 0, 0, 1, 0, 0, 5, 0, uintptr(unsafe.Pointer(family)))
 	runtime.KeepAlive(family)
 	u.fonts[k] = f
 	return f
@@ -108,13 +117,13 @@ func drawText(dc uintptr, rect winRect, font uintptr, rgb int, s string, flags u
 	prev := gc("SelectObject", dc, font)
 	gc("SetBkMode", dc, 1)
 	gc("SetTextColor", dc, colorRef(rgb))
-	uc("DrawTextW", dc, ptr(p), ^uintptr(0), ptr(&rect), flags)
+	uc("DrawTextW", dc, uintptr(unsafe.Pointer(p)), ^uintptr(0), uintptr(unsafe.Pointer(&rect)), flags)
 	gc("SelectObject", dc, prev)
 	runtime.KeepAlive(p)
 }
 func fillRect(dc uintptr, rect winRect, rgb int) {
 	brush := gc("CreateSolidBrush", colorRef(rgb))
-	uc("FillRect", dc, ptr(&rect), brush)
+	uc("FillRect", dc, uintptr(unsafe.Pointer(&rect)), brush)
 	gc("DeleteObject", brush)
 }
 func rounded(dc uintptr, r winRect, radius int, fill, border int) {
@@ -138,7 +147,7 @@ func drawLine(dc uintptr, x1, y1, x2, y2, width, rgb int) {
 
 func createControl(class, label string, ex, style uintptr, r winRect, parent, id, instance uintptr) uintptr {
 	a, b := utf(class), utf(label)
-	h := uc("CreateWindowExW", ex, ptr(a), ptr(b), style, uintptr(r.left), uintptr(r.top), uintptr(r.right-r.left), uintptr(r.bottom-r.top), parent, id, instance, 0)
+	h := uc("CreateWindowExW", ex, uintptr(unsafe.Pointer(a)), uintptr(unsafe.Pointer(b)), style, uintptr(r.left), uintptr(r.top), uintptr(r.right-r.left), uintptr(r.bottom-r.top), parent, id, instance, 0)
 	runtime.KeepAlive(a)
 	runtime.KeepAlive(b)
 	return h
@@ -158,7 +167,7 @@ func (u *desktopUI) run(ready chan<- error) {
 	u.scale = float64(gc("GetDeviceCaps", dc, 88)) / 96
 	uc("ReleaseDC", 0, dc)
 	var area winRect
-	uc("SystemParametersInfoW", 48, 0, ptr(&area), 0)
+	uc("SystemParametersInfoW", 48, 0, uintptr(unsafe.Pointer(&area)), 0)
 	if area.right <= area.left || area.bottom <= area.top {
 		area = winRect{0, 0, 1280, 720}
 	}
@@ -170,13 +179,13 @@ func (u *desktopUI) run(ready chan<- error) {
 	icon := uc("LoadIconW", u.instance, 1)
 	cursor := uc("LoadCursorW", 0, 32512)
 	wc := winClass{size: uint32(unsafe.Sizeof(winClass{})), proc: desktopProc, instance: u.instance, icon: icon, smallIcon: icon, cursor: cursor, class: name}
-	if uc("RegisterClassExW", ptr(&wc)) == 0 {
+	if uc("RegisterClassExW", uintptr(unsafe.Pointer(&wc))) == 0 {
 		ready <- fmt.Errorf("无法注册桌面窗口")
 		return
 	}
 	activeDesktop = u
 	r := u.rect(0, 0, screenW, screenH)
-	uc("AdjustWindowRectEx", ptr(&r), desktopStyle, 0, 0)
+	uc("AdjustWindowRectEx", uintptr(unsafe.Pointer(&r)), desktopStyle, 0, 0)
 	w, h := r.right-r.left, r.bottom-r.top
 	x := area.left + (area.right-area.left-w)/2
 	y := area.top + (area.bottom-area.top-h)/2
@@ -189,13 +198,14 @@ func (u *desktopUI) run(ready chan<- error) {
 	dark := int32(1)
 	dwm := windows.NewLazySystemDLL("dwmapi.dll").NewProc("DwmSetWindowAttribute")
 	if dwm.Find() == nil {
-		dwm.Call(u.hwnd, 20, ptr(&dark), 4)
+		dwm.Call(u.hwnd, 20, uintptr(unsafe.Pointer(&dark)), 4)
 	}
 	u.icon = uc("LoadImageW", u.instance, 1, 1, uintptr(u.px(48)), uintptr(u.px(48)), 0x8000)
 	if u.icon == 0 {
 		u.icon = icon
 	}
 	u.inputBrush = gc("CreateSolidBrush", colorRef(editorBG))
+	u.backgroundBrush = gc("CreateSolidBrush", colorRef(bg))
 	u.setupControls()
 	u.setPage(homePage)
 	u.refresh()
@@ -205,20 +215,21 @@ func (u *desktopUI) run(ready chan<- error) {
 	ready <- nil
 	var msg winMsg
 	for {
-		ret := int32(uc("GetMessageW", ptr(&msg), 0, 0, 0))
+		ret := int32(uc("GetMessageW", uintptr(unsafe.Pointer(&msg)), 0, 0, 0))
 		if ret <= 0 {
 			break
 		}
-		if uc("IsDialogMessageW", u.hwnd, ptr(&msg)) == 0 {
-			uc("TranslateMessage", ptr(&msg))
-			uc("DispatchMessageW", ptr(&msg))
+		if uc("IsDialogMessageW", u.hwnd, uintptr(unsafe.Pointer(&msg))) == 0 {
+			uc("TranslateMessage", uintptr(unsafe.Pointer(&msg)))
+			uc("DispatchMessageW", uintptr(unsafe.Pointer(&msg)))
 		}
 	}
 	for _, f := range u.fonts {
 		gc("DeleteObject", f)
 	}
 	gc("DeleteObject", u.inputBrush)
-	uc("UnregisterClassW", ptr(name), u.instance)
+	gc("DeleteObject", u.backgroundBrush)
+	uc("UnregisterClassW", uintptr(unsafe.Pointer(name)), u.instance)
 	runtime.KeepAlive(name)
 }
 func desktopWindowProc(hwnd uintptr, msg uint32, w, l uintptr) uintptr {
@@ -232,7 +243,7 @@ func desktopWindowProc(hwnd uintptr, msg uint32, w, l uintptr) uintptr {
 			return 0 // WM_PRINTCLIENT
 		case 0x000f:
 			var ps paintInfo
-			dc := uc("BeginPaint", hwnd, ptr(&ps))
+			dc := uc("BeginPaint", hwnd, uintptr(unsafe.Pointer(&ps)))
 			mem := gc("CreateCompatibleDC", dc)
 			bmp := gc("CreateCompatibleBitmap", dc, uintptr(u.px(screenW)), uintptr(u.px(screenH)))
 			old := gc("SelectObject", mem, bmp)
@@ -241,16 +252,28 @@ func desktopWindowProc(hwnd uintptr, msg uint32, w, l uintptr) uintptr {
 			gc("SelectObject", mem, old)
 			gc("DeleteObject", bmp)
 			gc("DeleteDC", mem)
-			uc("EndPaint", hwnd, ptr(&ps))
+			uc("EndPaint", hwnd, uintptr(unsafe.Pointer(&ps)))
 			return 0
 		case 0x002b:
 			var item drawItem
-			kc("RtlMoveMemory", ptr(&item), l, unsafe.Sizeof(item))
+			kc("RtlMoveMemory", uintptr(unsafe.Pointer(&item)), l, unsafe.Sizeof(item))
 			if item.typ == 4 {
 				u.paintButton(&item)
 				return 1
 			}
 		case 0x0133, 0x0134, 0x0138:
+			if notice := u.controls[noticeControl]; notice != nil && l == notice.h {
+				ink := muted
+				if u.message != "" {
+					ink = mint
+				}
+				if u.isError {
+					ink = 0xffb39c
+				}
+				gc("SetTextColor", w, colorRef(ink))
+				gc("SetBkColor", w, colorRef(bg))
+				return u.backgroundBrush
+			}
 			gc("SetTextColor", w, colorRef(fg))
 			gc("SetBkColor", w, colorRef(editorBG))
 			return u.inputBrush

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -71,6 +72,8 @@ func TestWindowsGUIProcess(t *testing.T) {
 	}
 	cmd := exec.Command(exe)
 	cmd.Dir = t.TempDir()
+	var childErr bytes.Buffer
+	cmd.Stderr = &childErr
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +91,7 @@ func TestWindowsGUIProcess(t *testing.T) {
 		t.Fatal("native desktop window did not appear")
 	}
 	var owner uint32
-	uc("GetWindowThreadProcessId", native, ptr(&owner))
+	uc("GetWindowThreadProcessId", native, uintptr(unsafe.Pointer(&owner)))
 	if owner != uint32(cmd.Process.Pid) {
 		t.Fatal("unexpected native window owner")
 	}
@@ -128,15 +131,29 @@ func TestWindowsGUIProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	linkPtr := utf(link)
-	uc("SendMessageW", field, 0x000c, 0, ptr(linkPtr))
+	uc("SendMessageW", field, 0x000c, 0, uintptr(unsafe.Pointer(linkPtr)))
 	runtime.KeepAlive(linkPtr)
+	length := int(uc("SendMessageW", field, 0x000e, 0, 0))
+	if length != len(link) {
+		t.Fatalf("native import field length %d, want %d", length, len(link))
+	}
 	click(saveImport)
 	wait := func(label string, valid func() bool) {
 		t.Helper()
 		limit := time.Now().Add(8 * time.Second)
 		for !valid() {
 			if time.Now().After(limit) {
-				t.Fatal(label)
+				file, readErr := os.ReadFile(filepath.Join(cmd.Dir, "client.json"))
+				var c Config
+				_ = json.Unmarshal(file, &c)
+				h := uc("GetDlgItem", native, toggleAction)
+				var b [128]uint16
+				uc("SendMessageW", h, 0x000d, uintptr(len(b)), uintptr(unsafe.Pointer(&b[0])))
+				var status [512]uint16
+				notice := uc("GetDlgItem", native, noticeControl)
+				uc("SendMessageW", notice, 0x000d, uintptr(len(status)), uintptr(unsafe.Pointer(&status[0])))
+				t.Logf("Native UI feedback: %s", windows.UTF16ToString(status[:]))
+				t.Fatalf("%s; saved=%v endpoint=%s tls=%d home-visible=%d toggle=%q import-visible=%d", label, readErr == nil, c.ServerIP, c.TLSPort, uc("IsWindowVisible", h), windows.UTF16ToString(b[:]), uc("IsWindowVisible", field))
 			}
 			time.Sleep(70 * time.Millisecond)
 		}
@@ -144,7 +161,7 @@ func TestWindowsGUIProcess(t *testing.T) {
 	toggle := uc("GetDlgItem", native, toggleAction)
 	controlText := func(h uintptr) string {
 		var b [128]uint16
-		uc("SendMessageW", h, 0x000d, uintptr(len(b)), ptr(&b[0]))
+		uc("SendMessageW", h, 0x000d, uintptr(len(b)), uintptr(unsafe.Pointer(&b[0])))
 		return windows.UTF16ToString(b[:])
 	}
 	wait("import did not select the TLS node", func() bool { return uc("IsWindowVisible", toggle) != 0 && controlText(toggle) == "启动连接" })

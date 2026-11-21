@@ -11,7 +11,7 @@ import (
 // Capture only the native client area on the Windows release runner.
 func captureDesktopWindow(hwnd uintptr, path string) error {
 	var r winRect
-	if uc("GetClientRect", hwnd, ptr(&r)) == 0 {
+	if uc("GetClientRect", hwnd, uintptr(unsafe.Pointer(&r))) == 0 {
 		return fmt.Errorf("GetClientRect failed")
 	}
 	w, h := int(r.right), int(r.bottom)
@@ -43,7 +43,7 @@ func captureDesktopWindow(hwnd uintptr, path string) error {
 	}
 	info := header{size: uint32(unsafe.Sizeof(header{})), width: int32(w), height: -int32(h), planes: 1, bits: 32}
 	im := image.NewRGBA(image.Rect(0, 0, w, h))
-	if gc("GetDIBits", mem, bmp, 0, uintptr(h), ptr(&im.Pix[0]), ptr(&info), 0) == 0 {
+	if gc("GetDIBits", mem, bmp, 0, uintptr(h), uintptr(unsafe.Pointer(&im.Pix[0])), uintptr(unsafe.Pointer(&info)), 0) == 0 {
 		return fmt.Errorf("GetDIBits failed")
 	}
 	for i := 0; i < len(im.Pix); i += 4 {

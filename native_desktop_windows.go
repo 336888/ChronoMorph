@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf16"
+	"unsafe"
 )
 
 const (
@@ -59,6 +60,7 @@ const (
 	keyEdit
 	listenEdit
 	logEdit
+	noticeControl
 )
 
 type nativeControl struct {
@@ -75,26 +77,26 @@ type desktopResult struct {
 	measuredClient *ClientMux
 }
 type desktopUI struct {
-	ctrl                              *GUIController
-	hwnd, instance, icon, inputBrush  uintptr
-	scale                             float64
-	fonts                             map[[2]int]uintptr
-	controls                          map[int]*nativeControl
-	results                           chan desktopResult
-	page                              int
-	busy                              bool
-	message                           string
-	isError                           bool
-	running, proxy, global, tun, auto bool
-	ip, listen, nodeName              string
-	tlsPort                           int
-	current                           *ClientMux
-	profiles                          []NodeProfile
-	active                            int
-	nodeRows                          string
-	rtt                               int64
-	tx, rx                            uint64
-	logs                              string
+	ctrl                                              *GUIController
+	hwnd, instance, icon, backgroundBrush, inputBrush uintptr
+	scale                                             float64
+	fonts                                             map[[2]int]uintptr
+	controls                                          map[int]*nativeControl
+	results                                           chan desktopResult
+	page                                              int
+	busy                                              bool
+	message                                           string
+	isError                                           bool
+	running, proxy, global, tun, auto                 bool
+	ip, listen, nodeName                              string
+	tlsPort                                           int
+	current                                           *ClientMux
+	profiles                                          []NodeProfile
+	active                                            int
+	nodeRows                                          string
+	rtt                                               int64
+	tx, rx                                            uint64
+	logs                                              string
 }
 
 var activeDesktop *desktopUI
@@ -116,6 +118,9 @@ func (u *desktopUI) input(id, page, x, y, w, h int, class string, style uintptr)
 	u.controls[id] = &nativeControl{control, page, ""}
 }
 func (u *desktopUI) setupControls() {
+	n := createControl("STATIC", "", 0, 0x40004000, u.rect(214, 506, 600, 28), u.hwnd, noticeControl, u.instance)
+	uc("SendMessageW", n, 0x30, u.font(13, 400), 1)
+	u.controls[noticeControl] = &nativeControl{n, 0, ""}
 	for i, name := range []string{"连接概览", "我的节点", "连接日志", "设置"} {
 		u.button(navHome+i, 0, 14, 114+i*49, 158, 41, name)
 	}
@@ -243,7 +248,7 @@ func (u *desktopUI) refresh() {
 			uc("SendMessageW", h, 0x184, 0, 0)
 			for _, r := range rows {
 				p := utf(r)
-				uc("SendMessageW", h, 0x180, 0, ptr(p))
+				uc("SendMessageW", h, 0x180, 0, uintptr(unsafe.Pointer(p)))
 				runtime.KeepAlive(p)
 			}
 			uc("SendMessageW", h, 0x186, uintptr(u.active), 0)
@@ -260,6 +265,7 @@ func (u *desktopUI) refresh() {
 			u.logs = s
 		}
 	}
+	u.updateNotice()
 	uc("InvalidateRect", u.hwnd, 0, 0)
 }
 func onLabel(v bool) string {
@@ -442,9 +448,22 @@ func (u *desktopUI) command(id int) {
 		}
 	}
 }
+func (u *desktopUI) updateNotice() {
+	line := u.message
+	if line == "" && u.page == homePage {
+		listen := u.listen
+		if listen == "" {
+			listen = "127.0.0.1:1080"
+		}
+		line = "本地监听    " + listen
+	}
+	u.label(noticeControl, line)
+}
+
 func (u *desktopUI) feedback(s string, isError bool) {
 	u.message = s
 	u.isError = isError
+	u.updateNotice()
 	uc("InvalidateRect", u.hwnd, 0, 0)
 }
 func (u *desktopUI) copy(s string) error {
@@ -462,7 +481,7 @@ func (u *desktopUI) copy(s string) error {
 		kc("GlobalFree", buf)
 		return fmt.Errorf("无法写入剪贴板")
 	}
-	kc("RtlMoveMemory", dst, ptr(&data[0]), uintptr(len(data)*2))
+	kc("RtlMoveMemory", dst, uintptr(unsafe.Pointer(&data[0])), uintptr(len(data)*2))
 	runtime.KeepAlive(data)
 	kc("GlobalUnlock", buf)
 	uc("EmptyClipboard")

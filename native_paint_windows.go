@@ -89,19 +89,7 @@ func (u *desktopUI) paint(dc uintptr) {
 		u.text(dc, 227, 95, 490, 27, 14, 500, muted, "服务端 IP")
 		u.text(dc, 227, 180, 490, 27, 14, 500, muted, "MasterKey · 64 位十六进制")
 	}
-	color := mint
-	if u.isError {
-		color = 0xffb39c
-	}
-	if u.message != "" {
-		u.text(dc, 214, 496, 602, 42, 13, 500, color, u.message)
-	} else if u.page == homePage {
-		local := u.listen
-		if local == "" {
-			local = "127.0.0.1:1080"
-		}
-		u.text(dc, 214, 498, 596, 35, 12, 400, muted, "本地监听    "+local)
-	}
+
 }
 func formatRate(v uint64) string {
 	if v >= 1024*1024 {
