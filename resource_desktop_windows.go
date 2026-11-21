@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -35,6 +36,9 @@ var resourceCards = [...]struct {
 	{geoIPFile, "IP 地区", "GEOIP", "IP 或 CIDR,标签  ·  203.0.113.0/24,cn  或  203.0.113.1,-", blue},
 	{geoASNFile, "自治系统", "IP-ASN", "IP 或 CIDR,ASN  ·  203.0.113.0/24,13335  或  203.0.113.1,-", 0xc6a8ff},
 }
+
+// Serializes resource updates so a slow download cannot overwrite a later edit.
+var resourceUpdateMu sync.Mutex
 
 func (u *desktopUI) setupResourceControls() {
 	u.button(syncResources, resourcesPage, 651, 89, 145, 34, "同步全部")
@@ -131,6 +135,8 @@ func (u *desktopUI) resourceCommand(id int) bool {
 		}
 		format := u.tr("已同步 %d 个资源")
 		u.work(func() desktopResult {
+			resourceUpdateMu.Lock()
+			defer resourceUpdateMu.Unlock()
 			g.mu.Lock()
 			s := g.cfg.Routing
 			g.mu.Unlock()
@@ -149,6 +155,8 @@ func (u *desktopUI) resourceCommand(id int) bool {
 		}
 		message := name + " · " + u.tr("编辑已保存")
 		u.work(func() desktopResult {
+			resourceUpdateMu.Lock()
+			defer resourceUpdateMu.Unlock()
 			g.mu.Lock()
 			s := g.cfg.Routing
 			g.mu.Unlock()
