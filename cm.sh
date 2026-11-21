@@ -62,7 +62,7 @@ fetch_latest_from_github() {
 stage_binary() {
     local work=$1 name=$2 dir file
     for file in "$name" chronomorph; do
-        for dir in "$PWD" "$SCRIPT_DIR"; do
+        for dir in "$SCRIPT_DIR" "$PWD"; do
             [[ -f "$dir/$file" && ! "$dir/$file" -ef "$BIN_PATH" ]] || continue
             install -m 700 "$dir/$file" "$work/$name" || return 1
             if [[ -f "$dir/SHA256SUMS.txt" ]]; then
@@ -100,7 +100,7 @@ prepare_config_dir() {
 }
 
 gen_share_link() {
-    local key="$1" name="${2:-ChronoMorph}" tls_port=${3:-0} tls_pin=${4:-} ip4 ip6
+    local key="$1" name="${2:-ChronoMorph}" tls_port=${3:-0} tls_pin=${4:-} udp_port=${5:-0} ip4 ip6
     if [[ -n ${CM_PUBLIC_IP:-} ]]; then
         ip4=$CM_PUBLIC_IP; ip6=$CM_PUBLIC_IP
     else
@@ -118,13 +118,37 @@ gen_share_link() {
         fi
         count=$((count+1))
         if [[ $tls_port != 0 ]]; then
-            printf '[IPv%s TLS/TCP] cm+tls://%s\n' "$family" "$(jq -cn --arg s "$ip" --arg k "$key" --arg n "$name-v$family-TLS" --argjson port "$tls_port" --arg pin "$tls_pin" '{s:$s,k:$k,n:$n,tls_port:$port,tls_pin:$pin}' | base64 -w0 | tr '+/' '-_' | tr -d '=')"
+            printf '[IPv%s TCP + UDP] cm+auto://%s\n' "$family" "$(jq -cn --arg s "$ip" --arg k "$key" --arg n "$name-v$family" --argjson tcp "$tls_port" --argjson udp "$udp_port" --arg pin "$tls_pin" '{s:$s,k:$k,n:$n,tls_port:$tcp,udp_port:$udp,tls_pin:$pin}' | base64 -w0 | tr '+/' '-_' | tr -d '=')"
+        else
+            printf '[IPv%s UDP] cm://%s\n' "$family" "$(jq -cn --arg s "$ip" --arg k "$key" --arg n "$name-v$family" '{s:$s,k:$k,n:$n}' | base64 -w0 | tr '+/' '-_' | tr -d '=')"
         fi
-        printf '[IPv%s UDP] cm://%s\n' "$family" "$(jq -cn --arg s "$ip" --arg k "$key" --arg n "$name-v$family" '{s:$s,k:$k,n:$n}' | base64 -w0 | tr '+/' '-_' | tr -d '=')"
 
     done
     if ((count==0)); then echo "未获取到公网 IP。可运行 sudo env CM_PUBLIC_IP=你的公网IP cm，再选 4 导出链接。" >&2; fi
     return 0
+}
+
+# Reuse a configured TLS address. For UDP-only installations, bind TCP on
+# the same address and port and keep the original file for rollback.
+prepare_dual_config() {
+    local candidate=$1 work=$2 addr
+    addr=$(jq -er '.listen' "$CFG_FILE") || return 1
+    "$candidate" tls-identity -create -dir "$CFG_DIR" >/dev/null || return 1
+    if [[ -z $(jq -r '.tls_listen // ""' "$CFG_FILE") ]]; then
+        cp -p "$CFG_FILE" "$work/pre-dual.json" || return 1
+        (umask 077; jq --arg addr "$addr" '.tls_listen=$addr' "$CFG_FILE" > "$work/dual.json") || return 1
+        install -m 600 "$work/dual.json" "$CFG_DIR/.dual-config.tmp" || return 1
+        mv -fT "$CFG_DIR/.dual-config.tmp" "$CFG_FILE" || return 1
+    fi
+}
+
+check_tcp_entry() {
+    local attempt
+    for attempt in 1 2 3 4 5; do
+        if "$BIN_PATH" tls-check -c "$CFG_FILE"; then return 0; fi
+        sleep 0.3
+    done
+    return 1
 }
 
 do_install() (
@@ -180,8 +204,11 @@ EOF
         echo 'delete table inet chronomorph' > "$work/apply.nft"
     fi
     cat "$NFT_FILE" >> "$work/apply.nft"
-    nft -f "$work/apply.nft"
-    systemctl enable nftables
+    if nft -f "$work/apply.nft"; then
+        systemctl enable nftables
+    else
+        echo "旧 UDP 链接的转发规则未能加载。双协议链接使用固定 UDP 端口。" >&2
+    fi
     cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=ChronoMorph RTP-Mimicry Hopping Server
@@ -211,9 +238,18 @@ EOF
     systemctl enable chronomorph
     if [[ -f "$BIN_PATH" ]]; then cp -p "$BIN_PATH" "$work/previous"; previous=1; fi
     if systemctl is-active --quiet chronomorph; then was_active=1; fi
+    prepare_dual_config "$work/$name" "$work"
     chmod 755 "$work/$name"
     mv -fT -- "$work/$name" "$BIN_PATH"
-    if ! systemctl restart chronomorph || ! systemctl is-active --quiet chronomorph; then
+    if ! systemctl restart chronomorph || ! check_tcp_entry; then
+        if [[ -f "$work/pre-dual.json" ]]; then
+            install -m 600 "$work/pre-dual.json" "$CFG_DIR/.dual-config.tmp"
+            mv -fT "$CFG_DIR/.dual-config.tmp" "$CFG_FILE"
+            if systemctl restart chronomorph && systemctl is-active --quiet chronomorph; then
+                echo "TCP $LISTEN_PORT 启用失败，已恢复 UDP 配置。请选 9 指定其他空闲 TCP 端口，再导入双协议链接。" >&2
+                return 0
+            fi
+        fi
         if ((previous)); then
             mv -fT "$work/previous" "$BIN_PATH"
             if ((was_active)); then systemctl restart chronomorph; fi
@@ -235,17 +271,19 @@ show_status() {
 
 show_links() {
     if [[ ! -f "$CFG_FILE" ]]; then echo "尚未安装服务端"; return 0; fi
-    local row name key listen port=0 pin=''
+    local row name key listen port=0 udp_port pin=''
+    udp_port=$(jq -er '.listen | capture(":(?<port>[0-9]+)$").port | tonumber' "$CFG_FILE")
     listen=$(jq -er '.tls_listen // ""' "$CFG_FILE")
     if [[ -n $listen ]]; then
         port=${listen##*:}
         pin=$("$BIN_PATH" tls-identity -dir "$CFG_DIR") || return 1
     fi
+    if [[ $port != 0 ]]; then echo "双协议节点：请在云安全组和主机防火墙放行 TCP $port 与 UDP $udp_port。"; fi
     while IFS= read -r row; do
         name=$(jq -r '.name' <<< "$row")
         key=$(jq -r '.key' <<< "$row")
         printf '\n用户 %s\n' "$name"
-        gen_share_link "$key" "$name" "$port" "$pin"
+        gen_share_link "$key" "$name" "$port" "$pin" "$udp_port"
     done < <(jq -c 'if (.users // [] | length)>0 then .users[] else {name:"default",key:.master_key} end' "$CFG_FILE")
 }
 
@@ -270,7 +308,7 @@ enable_tls() (
     if systemctl restart chronomorph; then
         for _ in 1 2 3; do
             if "$BIN_PATH" tls-check -c "$CFG_FILE"; then
-                echo "请在云安全组和主机防火墙放行 TCP $port。客户端导入下面的 cm+tls:// 链接。"
+                echo "请在云安全组和主机防火墙放行 TCP $port。客户端导入下面的 cm+auto:// 双协议链接。"
                 show_links
                 return 0
             fi
@@ -310,7 +348,7 @@ main_menu() {
         echo -e "${CYAN}=== ChronoMorph Debian 管理面板 [$(get_status_badge)] ===${PLAIN}"
         echo "1. 一键安装部署    2. 状态与跳频排障  3. 实时日志"
         echo "4. 导出分享链接    5. 实时流量看板    6. 热重载配置"
-        echo "7. 打包备份配置    8. 彻底卸载    9. 启用 TLS/TCP    0. 退出"
+        echo "7. 打包备份配置    8. 彻底卸载    9. 设置双协议 TCP 端口    0. 退出"
         read -rp "请选择 [0-9]: " ch
         case "$ch" in
             1) do_install ;; 2) show_status ;; 3) journalctl -u chronomorph -f -n 50 || true ;;

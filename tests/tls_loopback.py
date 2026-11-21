@@ -49,7 +49,7 @@ def socks_connect(port, receive_buffer=None):
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     if receive_buffer:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, receive_buffer)
-    sock.settimeout(7)
+    sock.settimeout(15 if "--dual" in sys.argv else 7)
     sock.connect((IP, port))
     sock.sendall(b"\x05\x01\x00")
     assert read(sock, 2) == b"\x05\x00"
@@ -82,6 +82,64 @@ def echo_udp_once(sock):
     sock.sendto(data, addr)
 
 
+def test_udp(client_port, resources):
+    origin = resources.enter_context(bind(socket.SOCK_DGRAM))
+    threading.Thread(target=echo_udp_once, args=(origin,), daemon=True).start()
+    with socks_connect(client_port) as control, bind(socket.SOCK_DGRAM) as udp:
+        control.sendall(b"\x05\x03\x00\x01" + b"\0" * 6)
+        reply = read(control, 10)
+        assert reply[:2] == b"\x05\x00"
+        relay = socket.inet_ntoa(reply[4:8]), int.from_bytes(reply[8:10], "big")
+        packet = b"\0\0\0\x01" + socket.inet_aton(IP) + struct.pack(">H", origin.getsockname()[1]) + b"udp"
+        udp.settimeout(5)
+        udp.sendto(packet, relay)
+        assert udp.recvfrom(1024)[0] == packet
+
+def exercise_dual_failover(resources, server_cfg, tls_port, client_port, key, tcp):
+    def start_server(udp_address):
+        server_cfg.write_text(json.dumps({"master_key": key, "listen": udp_address,
+                                         "tls_listen": f"{IP}:{tls_port}"}))
+        proc = subprocess.Popen([SERVER_EXE, "server", "-c", str(server_cfg)])
+        resources.callback(stop, proc)
+        return proc
+
+    def test_apps():
+        threading.Thread(target=echo_tcp_once, args=(tcp,), daemon=True).start()
+        assert tcp_request(client_port, tcp.getsockname()[1]) == 0
+        test_udp(client_port, resources)
+
+    # Accept TCP handshakes but never answer TLS. Only fixed-port UDP works.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as blackhole:
+        blackhole.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        blackhole.bind((IP, tls_port))
+        blackhole.listen()
+        udp_only = start_server(f"{IP}:{tls_port}")
+        test_apps()
+        print("PASS same client carries TCP and UDP when only fixed UDP works", flush=True)
+        stop(udp_only)
+
+    # The previous UDP session is now silently blackholed. Keep the client alive.
+    tcp_only = start_server("127.0.0.2:0")
+    deadline = time.monotonic() + 8
+    while subprocess.run([EXE, "tls-check", "-c", str(server_cfg)], capture_output=True).returncode:
+        if time.monotonic() >= deadline:
+            raise RuntimeError("TLS listener did not start")
+        time.sleep(0.1)
+    test_apps()
+    print("PASS same client switches both types of new traffic from dead UDP to TLS", flush=True)
+    stop(tcp_only)
+
+    both = start_server(f"{IP}:{tls_port}")
+    deadline = time.monotonic() + 8
+    while subprocess.run([EXE, "tls-check", "-c", str(server_cfg)], capture_output=True).returncode:
+        if time.monotonic() >= deadline:
+            raise RuntimeError("combined listener did not start")
+        time.sleep(0.1)
+    test_apps()
+    print("PASS simultaneous TCP and UDP listeners on the same numeric port", flush=True)
+    stop(both)
+
+
 with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as resources:
     directory = Path(tmp)
     key = subprocess.check_output([EXE, "keygen"], text=True).split()[-1]
@@ -95,7 +153,8 @@ with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as resources:
                                       "tls_listen": f"{IP}:{tls_port}"}))
     client_cfg = directory / "client.json"
     client_cfg.write_text(json.dumps({"listen": f"{IP}:{client_port}", "server_ip": IP,
-                                      "master_key": key, "tls_port": tls_port, "tls_pin": pin}))
+                                      "master_key": key, "tls_port": tls_port, "tls_pin": pin,
+                                      "udp_port": tls_port if "--dual" in sys.argv else 0}))
     server = subprocess.Popen([SERVER_EXE, "server", "-c", str(server_cfg)])
     resources.callback(stop, server)
     client = subprocess.Popen([EXE, "client", "-c", str(client_cfg)])
@@ -115,17 +174,7 @@ with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as resources:
     assert tcp_request(client_port, tcp.getsockname()[1]) == 0
     print("PASS SOCKS5 TCP with server-side hostname resolution over TLS")
 
-    origin = resources.enter_context(bind(socket.SOCK_DGRAM))
-    threading.Thread(target=echo_udp_once, args=(origin,), daemon=True).start()
-    with socks_connect(client_port) as control, bind(socket.SOCK_DGRAM) as udp:
-        control.sendall(b"\x05\x03\x00\x01" + b"\0" * 6)
-        reply = read(control, 10)
-        assert reply[:2] == b"\x05\x00"
-        relay = socket.inet_ntoa(reply[4:8]), int.from_bytes(reply[8:10], "big")
-        packet = b"\0\0\0\x01" + socket.inet_aton(IP) + struct.pack(">H", origin.getsockname()[1]) + b"udp"
-        udp.settimeout(5)
-        udp.sendto(packet, relay)
-        assert udp.recvfrom(1024)[0] == packet
+    test_udp(client_port, resources)
     print("PASS SOCKS5 UDP over TLS with no UDP path to the server")
 
     if "--basic" not in sys.argv:
@@ -161,6 +210,8 @@ with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as resources:
         print("PASS client half-close followed by complete delayed response", flush=True)
 
     stop(server)
+    if "--dual" in sys.argv:
+        exercise_dual_failover(resources, server_cfg, tls_port, client_port, key, tcp)
     assert tcp_request(client_port, tcp.getsockname()[1]) != 0
     tcp.settimeout(0.3)
     try:

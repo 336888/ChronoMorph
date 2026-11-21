@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/rand"
@@ -20,11 +21,13 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync/atomic"
 	"time"
 )
 
 // TLSNode is carried in TLS node links. Both fields are mandatory for this transport.
 type TLSNode struct {
+	UDPPort int    `json:"udp_port,omitempty"` // Fixed UDP endpoint for dual-transport nodes.
 	TLSPort int    `json:"tls_port,omitempty"`
 	TLSPin  string `json:"tls_pin,omitempty"`
 }
@@ -32,6 +35,9 @@ type TLSNode struct {
 func (n TLSNode) validate() error {
 	if n == (TLSNode{}) {
 		return nil
+	}
+	if n.UDPPort < 0 || n.UDPPort > 65535 {
+		return errors.New("UDP 端口无效")
 	}
 	pin, err := hex.DecodeString(n.TLSPin)
 	if n.TLSPort < 1 || n.TLSPort > 65535 || err != nil || len(pin) != sha256.Size {
@@ -143,12 +149,16 @@ func clientTLSConfig(master []byte, node TLSNode) (*tls.Config, error) {
 	}, nil
 }
 
-func (cm *ClientMux) dialTLS() (net.Conn, error) {
+func (cm *ClientMux) dialTLS(ctx context.Context) (net.Conn, error) {
 	addr := net.JoinHostPort(cm.serverIP.String(), strconv.Itoa(cm.tlsNode.TLSPort))
-	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second}, "tcp", addr, cm.tlsConfig)
+	dialer := tls.Dialer{NetDialer: &net.Dialer{Timeout: 5 * time.Second}, Config: cm.tlsConfig}
+	raw, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("TLS/TCP %s: %w", addr, err)
 	}
+	conn := raw.(*tls.Conn)
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
 	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	var ack [1]byte
 	_, err = io.ReadFull(conn, ack[:])
@@ -162,9 +172,10 @@ func (cm *ClientMux) dialTLS() (net.Conn, error) {
 
 type tlsMeterConn struct {
 	net.Conn
-	muxV2 bool
-	users *MultiUserEngine
-	user  *UserEntry
+	lastReply atomic.Int64
+	muxV2     bool
+	users     *MultiUserEngine
+	user      *UserEntry
 }
 
 func (c *tlsMeterConn) allowed() bool {
@@ -181,6 +192,9 @@ func (c *tlsMeterConn) Read(p []byte) (int, error) {
 	}
 	n, err := c.Conn.Read(p)
 	if n > 0 {
+		if c.user == nil {
+			c.lastReply.Store(time.Now().UnixNano())
+		}
 		if !c.allowed() {
 			return 0, net.ErrClosed
 		}

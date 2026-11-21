@@ -8,7 +8,7 @@ on:
       tag:
         description: Version tag
         required: true
-        default: v1.1.2
+        default: v1.2.0
 
 permissions:
   contents: write
@@ -75,6 +75,7 @@ jobs:
           build android arm64 chronomorph_android_arm64
           release/chronomorph-linux-amd64 version
           python3 tests/tls_loopback.py release/chronomorph-linux-amd64
+          python3 tests/tls_loopback.py release/chronomorph-linux-amd64 --dual --basic
           python3 tests/udp_rebind.py release/chronomorph-linux-amd64 --idle --isolate --restart
           python3 tests/udp_rebind.py release/chronomorph-linux-amd64 --first-loss --outage
           cp cm.sh setup_win.ps1 uninstall_win.ps1 client.example.json release/

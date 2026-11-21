@@ -114,3 +114,29 @@ func TestRoutingDomainBoundariesAndTrailingDot(t *testing.T) {
 		t.Fatal("global mode bypassed tunnel for a public host")
 	}
 }
+
+func TestDualShareLink(t *testing.T) {
+	profile := ShareProfile{ServerIP: "::1", MasterKey: strings.Repeat("21", 32), TLSNode: TLSNode{TLSPort: 443, TLSPin: strings.Repeat("8a", 32), UDPPort: 40000}}
+	link, err := profile.encode()
+	if err != nil || !strings.HasPrefix(link, "cm+auto://") {
+		t.Fatal("encode", err)
+	}
+	parsed, err := DecodeShareLink(link)
+	if err != nil || *parsed != profile {
+		t.Fatal("round trip", err)
+	}
+	for _, scheme := range []string{"cm://", "cm+tls://"} {
+		if _, err = DecodeShareLink(strings.Replace(link, "cm+auto://", scheme, 1)); err == nil {
+			t.Fatalf("accepted mismatched scheme %s", scheme)
+		}
+	}
+	profile.TLSPin = ""
+	if _, err = profile.encode(); err == nil {
+		t.Fatal("accepted missing TLS identity")
+	}
+	profile.TLSPin = strings.Repeat("8a", 32)
+	profile.UDPPort = 65536
+	if _, err = profile.encode(); err == nil {
+		t.Fatal("accepted invalid fixed UDP port")
+	}
+}

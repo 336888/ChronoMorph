@@ -169,6 +169,7 @@ type RTPPacketConn struct {
 	guard     *AbuseGuard
 	lastReply atomic.Int64
 	lastPort  atomic.Int32
+	fixedPort int
 	peers     udpPeers
 }
 
@@ -244,10 +245,15 @@ func (c *RTPPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 		if err != nil {
 			return 0, err
 		}
+		if c.fixedPort != 0 {
+			port = c.fixedPort
+		}
 		dst := &net.UDPAddr{IP: c.serverIP, Port: port}
 		if c.lastPort.Swap(int32(port)) != int32(port) {
 			LiveStats.activePort.Store(int32(port))
-			_, _ = c.raw.WriteTo(BuildSTUNBindingRequest(), dst)
+			if c.fixedPort == 0 {
+				_, _ = c.raw.WriteTo(BuildSTUNBindingRequest(), dst)
+			}
 		}
 		_, err = c.raw.WriteTo(pkt, dst)
 		if err == nil {

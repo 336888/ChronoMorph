@@ -16,7 +16,7 @@ func (g *GUIController) StartTunnelWatchdog(stopCh <-chan struct{}) {
 				cm, running := g.cm, g.running
 				g.mu.Unlock()
 				if cm != nil && running {
-					if now.Sub(last) > 15*time.Second && cm.tlsConfig == nil {
+					if now.Sub(last) > 15*time.Second && cm.packetEngine != nil {
 						go SyncTimeOffset()
 					}
 					// Test and remove the same closed session under one lock.

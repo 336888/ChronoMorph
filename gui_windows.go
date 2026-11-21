@@ -59,7 +59,7 @@ func (g *GUIController) startTunnelLocked(cfg *Config, save bool) error {
 		}
 	}
 	g.cfg = cfg
-	if cm.tlsConfig == nil {
+	if cm.packetEngine != nil {
 		go SyncTimeOffset()
 	}
 	g.cm = cm
@@ -123,7 +123,7 @@ func (g *GUIController) importProfile(p *ShareProfile) error {
 	cfg.Profiles = append([]NodeProfile(nil), cfg.Profiles...)
 	idx := len(cfg.Profiles)
 	for i, node := range cfg.Profiles {
-		if node.ServerIP == p.ServerIP && node.MasterKey == p.MasterKey && node.TLSPort == p.TLSPort {
+		if node.ServerIP == p.ServerIP && node.MasterKey == p.MasterKey && node.TLSPort == p.TLSPort && (node.UDPPort == 0) == (p.UDPPort == 0) {
 			idx = i
 			break
 		}
@@ -208,6 +208,8 @@ func RunWindowsGUI(cfgPath string) {
 		resp := map[string]any{
 			"version":       AppVersion,
 			"tls_port":      ctrl.cfg.TLSPort,
+			"udp_port":      ctrl.cfg.UDPPort,
+			"transport":     ctrl.cm.transportName(),
 			"running":       ctrl.running,
 			"server_ip":     ctrl.cfg.ServerIP,
 			"master_key":    ctrl.cfg.MasterKey,
@@ -476,7 +478,7 @@ async function refresh() {
     setPill('modeBtn', d.global_mode, '全局代理', '智能分流');
     setPill('tunBtn', d.tun_mode, '已开启', '未开启');
     setPill('autoBtn', d.auto_start, '已开启', '已关闭');
-    document.getElementById('port').textContent = d.tls_port ? 'TLS/TCP ' + d.tls_port : 'UDP ' + (d.active_port || '—');
+    document.getElementById('port').textContent = d.udp_port ? 'TCP + UDP · ' + d.transport : d.tls_port ? 'TLS/TCP ' + d.tls_port : 'UDP ' + (d.active_port || '—');
     document.getElementById('cd').textContent = d.tls_port ? '' : ' (' + d.hop_countdown + 's)';
     document.getElementById('tx').textContent = d.tx_kbps ?? 0;
     document.getElementById('rx').textContent = d.rx_kbps ?? 0;
@@ -502,7 +504,7 @@ async function testPing() {
   document.getElementById('err').textContent = res.ok ? '' : await res.text();
 }
 async function importLink() {
-  const link = prompt('粘贴服务端生成的 cm+tls:// 或 cm:// 链接');
+  const link = prompt('粘贴服务端生成的 cm+auto:// 双协议或旧版链接');
   if (!link) return;
   const res = await fetch('/api/import', { method: 'POST', headers: H, body: JSON.stringify({ link: link.trim() }) });
   if (res.ok) editingConfig = false;

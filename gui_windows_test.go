@@ -125,7 +125,7 @@ func TestWindowsGUIProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	go serveTLS(listener, cert, users)
-	profile := ShareProfile{ServerIP: "127.0.0.1", MasterKey: master, Name: "本机测试节点", TLSNode: TLSNode{TLSPort: listener.Addr().(*net.TCPAddr).Port, TLSPin: fmt.Sprintf("%x", sha256.Sum256(cert.Certificate[0]))}}
+	profile := ShareProfile{ServerIP: "127.0.0.1", MasterKey: master, Name: "本机测试节点", TLSNode: TLSNode{UDPPort: listener.Addr().(*net.TCPAddr).Port, TLSPort: listener.Addr().(*net.TCPAddr).Port, TLSPin: fmt.Sprintf("%x", sha256.Sum256(cert.Certificate[0]))}}
 	link, err := profile.encode()
 	if err != nil {
 		t.Fatal(err)
@@ -164,7 +164,7 @@ func TestWindowsGUIProcess(t *testing.T) {
 		uc("SendMessageW", h, 0x000d, uintptr(len(b)), uintptr(unsafe.Pointer(&b[0])))
 		return windows.UTF16ToString(b[:])
 	}
-	wait("import did not select the TLS node", func() bool { return uc("IsWindowVisible", toggle) != 0 && controlText(toggle) == "启动连接" })
+	wait("import did not select the dual node", func() bool { return uc("IsWindowVisible", toggle) != 0 && controlText(toggle) == "启动连接" })
 	click(toggleAction)
 	wait("native start did not enable the local listener", func() bool { return controlText(toggle) == "断开连接" })
 	click(pingAction)
@@ -177,7 +177,7 @@ func TestWindowsGUIProcess(t *testing.T) {
 	}
 	click(toggleAction)
 	wait("native stop did not release the listener", func() bool { return controlText(toggle) == "启动连接" })
-	t.Log("Native TLS node import, start, authenticated ping and stop verified")
+	t.Log("Native dual node import, start, authenticated ping and stop verified")
 	click(navNodes)
 	del := uc("GetDlgItem", native, deleteNode)
 	if del == 0 || uc("IsWindowVisible", del) == 0 {

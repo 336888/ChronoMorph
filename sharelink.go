@@ -32,18 +32,24 @@ func (p ShareProfile) encode() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	prefix := "cm://"
-	if p.TLSPort != 0 {
-		prefix = "cm+tls://"
+	return p.scheme() + "://" + base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+func (p ShareProfile) scheme() string {
+	if p.UDPPort != 0 {
+		return "cm+auto"
 	}
-	return prefix + base64.RawURLEncoding.EncodeToString(b), nil
+	if p.TLSPort != 0 {
+		return "cm+tls"
+	}
+	return "cm"
 }
 
 func DecodeShareLink(link string) (*ShareProfile, error) {
 	link = strings.TrimSpace(link)
 	prefix, encoded, ok := strings.Cut(link, "://")
-	if !ok || (prefix != "cm" && prefix != "cm+tls") {
-		return nil, errors.New("请输入 cm:// 或 cm+tls:// 节点链接")
+	if !ok || (prefix != "cm" && prefix != "cm+tls" && prefix != "cm+auto") {
+		return nil, errors.New("请输入 cm+auto://、cm:// 或 cm+tls:// 节点链接")
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(encoded)
 	if err != nil {
@@ -62,7 +68,7 @@ func DecodeShareLink(link string) (*ShareProfile, error) {
 	if err := p.TLSNode.validate(); err != nil {
 		return nil, err
 	}
-	if (prefix == "cm+tls") != (p.TLSPort != 0) {
+	if prefix != p.scheme() {
 		return nil, errors.New("节点类型与 TLS 参数不一致")
 	}
 	return &p, nil

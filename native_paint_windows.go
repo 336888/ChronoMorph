@@ -83,7 +83,7 @@ func (u *desktopUI) paint(dc uintptr) {
 		u.text(dc, 233, 327, 418, 21, 12, 400, muted, "对当前 Windows 用户生效")
 	case importPage:
 		u.card(dc, 211, 92, 607, 245, panel)
-		u.text(dc, 230, 107, 540, 32, 15, 500, fg, "粘贴服务端生成的 cm+tls:// 或 cm:// 分享链接")
+		u.text(dc, 230, 107, 540, 32, 15, 500, fg, "粘贴服务端生成的 cm+auto:// 双协议链接，也支持旧链接")
 	case manualPage:
 		u.card(dc, 211, 85, 607, 270, panel)
 		u.text(dc, 227, 95, 490, 27, 14, 500, muted, "服务端 IP")

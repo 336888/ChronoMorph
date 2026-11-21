@@ -44,7 +44,7 @@ func TestUDPCapabilityNegotiation(t *testing.T) {
 					_, _ = s.Write(tc.reply)
 				}
 			}()
-			got, err := confirmUDP(client)
+			got, err := negotiateDialMode(client)
 			if (err != nil) != tc.reject || got != tc.want {
 				t.Fatalf("mode=%d err=%v", got, err)
 			}
@@ -62,7 +62,7 @@ func TestLateTimeoutKeepsReceivingSession(t *testing.T) {
 	cm := ClientMux{sess: session, udpPath: &RTPPacketConn{}}
 	before := time.Now()
 	cm.udpPath.lastReply.Store(before.Add(time.Millisecond).UnixNano())
-	if cm.discardSilentUDP(session, before) || session.IsClosed() {
+	if cm.discardSilentPath(session, before) || session.IsClosed() {
 		t.Fatal("late request timeout closed a working session")
 	}
 	// A timeout belonging to another session may retry, but cannot evict this one.
@@ -73,7 +73,7 @@ func TestLateTimeoutKeepsReceivingSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer stale.Close()
-	if !cm.discardSilentUDP(stale, before) || cm.sess != session || session.IsClosed() {
+	if !cm.discardSilentPath(stale, before) || cm.sess != session || session.IsClosed() {
 		t.Fatal("late timeout closed replacement")
 	}
 }

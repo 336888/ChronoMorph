@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -130,55 +131,71 @@ func runServer(cfgPath string) {
 	trafficSaved := StartTrafficPersistence(filepath.Join(filepath.Dir(cfgPath), "traffic.json"), multiEng, stopCh)
 	StartLocalStatsAPI(multiEng, guard)
 
+	var listeners int
+	failed := make(chan error, 2)
 	rawPC, err := listenTunnelUDP("udp", cfg.Listen)
-	if err != nil {
-		log.Fatalf("[Server] 监听 UDP %s 失败: %v", cfg.Listen, err)
+	if err == nil {
+		ln, listenErr := kcp.ServeConn(nil, 10, 3, NewServerRTPPacketConn(rawPC, multiEng, guard))
+		if listenErr == nil {
+			defer rawPC.Close()
+			defer ln.Close()
+			listeners++
+			go func() {
+				for {
+					conn, err := ln.AcceptKCP()
+					if err != nil {
+						failed <- err
+						return
+					}
+					tuneKCP(conn, 1150)
+					go handleServerSession(conn)
+				}
+			}()
+			log.Printf("[Server] ChronoMorph %s UDP 监听 %s (用户数: %d)", AppVersion, rawPC.LocalAddr(), len(users))
+		} else {
+			_ = rawPC.Close()
+			err = listenErr
+		}
 	}
-
-	rtpPC := NewServerRTPPacketConn(rawPC, multiEng, guard)
-	ln, err := kcp.ServeConn(nil, 10, 3, rtpPC)
 	if err != nil {
-		log.Fatalf("[Server] 启动 KCP 监听失败: %v", err)
+		log.Printf("[UDP] 无法监听 %s: %v", cfg.Listen, err)
 	}
-	log.Printf("[Server] ChronoMorph %s 已启动，监听 %s (用户数: %d)", AppVersion, cfg.Listen, len(users))
-
 	if cfg.TLSListen != "" {
 		cert, err := serverIdentity(filepath.Dir(cfgPath), false)
-		if err != nil {
-			log.Fatalf("[TLS] 无法读取服务端证书: %v", err)
+		if err == nil {
+			var ln net.Listener
+			ln, err = net.Listen("tcp", cfg.TLSListen)
+			if err == nil {
+				defer ln.Close()
+				listeners++
+				go func() { serveTLS(ln, cert, multiEng); failed <- fmt.Errorf("TLS/TCP 监听器关闭") }()
+				log.Printf("[TLS] TLS 1.3/TCP 已启动，监听 %s", ln.Addr())
+			}
 		}
-		tcpListener, err := net.Listen("tcp", cfg.TLSListen)
 		if err != nil {
-			log.Fatalf("[TLS] 无法监听 %s: %v", cfg.TLSListen, err)
+			log.Printf("[TLS] 无法启动 %s: %v", cfg.TLSListen, err)
 		}
-		defer tcpListener.Close()
-		go serveTLS(tcpListener, cert, multiEng)
-		log.Printf("[TLS] TLS 1.3/TCP 已启动，监听 %s", tcpListener.Addr())
 	}
-	go func() {
-		sig := make(chan os.Signal, 1)
-		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	if listeners == 0 {
+		log.Fatal("[Server] 所有传输入口均无法启动")
+	}
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sig)
+	for listeners > 0 {
 		select {
 		case <-sig:
-		case <-stopCh:
-			return
-		}
-		signal.Stop(sig)
-		_ = ln.Close()
-		_ = rawPC.Close()
-	}()
-
-	for {
-		conn, err := ln.AcceptKCP()
-		if err != nil {
 			close(stopCh)
-			_ = rawPC.Close()
 			<-trafficSaved
 			return
+		case err := <-failed:
+			log.Printf("[Server] 监听器已停止: %v", err)
+			listeners--
 		}
-		tuneKCP(conn, 1150)
-		go handleServerSession(conn)
 	}
+	close(stopCh)
+	<-trafficSaved
+	log.Fatal("[Server] 所有传输入口均已停止")
 }
 
 func handleServerSession(conn net.Conn) {
@@ -259,21 +276,24 @@ func handleServerStream(stream *smux.Stream) {
 }
 
 type ClientMux struct {
-	lastFailure   string
-	lastFailureAt time.Time
-	lastLogged    time.Time
-	tlsConfig     *tls.Config
-	tlsNode       TLSNode
-	closed        bool
-	mu            sync.Mutex
-	serverIP      net.IP
-	sess          *smux.Session
-	udpPath       *RTPPacketConn
-	dialMode      byte
-	retryAfter    time.Time
-	lastDialErr   error
-	packetEngine  *ChronoPacketEngine
-	udpRelay      *ClientMux
+	lastFailure     string
+	lastFailureAt   time.Time
+	lastLogged      time.Time
+	tlsConfig       *tls.Config
+	tlsNode         TLSNode
+	closed          bool
+	mu              sync.Mutex
+	serverIP        net.IP
+	sess            *smux.Session
+	udpPath         *RTPPacketConn
+	tcpPath         *tlsMeterConn
+	preferUDP       bool
+	activeTransport atomic.Int32
+	dialMode        byte
+	retryAfter      time.Time
+	lastDialErr     error
+	packetEngine    *ChronoPacketEngine
+	udpRelay        *ClientMux
 }
 
 func NewClientMux(serverIPStr, masterKeyHex string) (*ClientMux, error) {
@@ -295,7 +315,8 @@ func newNodeMux(serverIPStr, masterKeyHex string, node TLSNode) (*ClientMux, err
 	cm := &ClientMux{serverIP: ip, tlsNode: node}
 	if node.TLSPort != 0 {
 		cm.tlsConfig, err = clientTLSConfig(key, node)
-	} else {
+	}
+	if node.TLSPort == 0 || node.UDPPort != 0 {
 		cm.packetEngine = NewChronoPacketEngine(key)
 	}
 	return cm, err
@@ -325,25 +346,14 @@ func (cm *ClientMux) openSessionStream() (*smux.Stream, *smux.Session, byte, err
 	if time.Now().Before(cm.retryAfter) {
 		return nil, nil, 0, cm.lastDialErr
 	}
-	var conn net.Conn
-	var err error
-	if cm.tlsConfig != nil {
-		cm.dialMode = CmdDialTCP
-		conn, err = cm.dialTLS()
-	} else {
-		conn, err = cm.dialUDP()
-	}
+	path, err := cm.connectTransport()
 	if err == nil {
-		cm.sess, err = smux.Client(conn, smuxTransportConfig(conn))
-		if err != nil {
-			_ = conn.Close()
+		cm.sess, cm.udpPath, cm.tcpPath, cm.dialMode = path.session, path.udp, path.tcp, path.mode
+		transport := int32(1)
+		if path.tcp != nil {
+			transport = 2
 		}
-	}
-	if err == nil && cm.tlsConfig == nil {
-		cm.dialMode, err = confirmUDP(cm.sess)
-		if err != nil {
-			err = fmt.Errorf("UDP 节点未应答，请检查 UDP 放行、密钥和两端时间: %w", err)
-		}
+		cm.activeTransport.Store(transport)
 	}
 	if err == nil {
 		var st *smux.Stream
@@ -361,16 +371,22 @@ func (cm *ClientMux) openSessionStream() (*smux.Stream, *smux.Session, byte, err
 
 // A late timeout on an old stream must not close a replacement session or a
 // session which is receiving authenticated packets for unrelated streams.
-func (cm *ClientMux) discardSilentUDP(session *smux.Session, since time.Time) bool {
+func (cm *ClientMux) discardSilentPath(session *smux.Session, since time.Time) bool {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
-	if session == nil || cm.tlsConfig != nil || cm.closed {
+	if session == nil || (cm.tlsConfig != nil && cm.tlsNode.UDPPort == 0) || cm.closed {
 		return false
 	}
 	if cm.sess != session {
 		return true
 	}
-	if cm.udpPath == nil || cm.udpPath.lastReply.Load() >= since.UnixNano() {
+	var last *atomic.Int64
+	if cm.udpPath != nil {
+		last = &cm.udpPath.lastReply
+	} else if cm.tcpPath != nil {
+		last = &cm.tcpPath.lastReply
+	}
+	if last == nil || last.Load() >= since.UnixNano() {
 		return false
 	}
 	cm.closeLocked()
@@ -386,10 +402,16 @@ func (cm *ClientMux) openUDPRelayStream() (*smux.Stream, error) {
 		return nil, net.ErrClosed
 	}
 	if cm.udpRelay == nil {
-		cm.udpRelay = &ClientMux{serverIP: cm.serverIP, tlsNode: cm.tlsNode, tlsConfig: cm.tlsConfig, packetEngine: cm.packetEngine}
+		cm.udpRelay = &ClientMux{serverIP: cm.serverIP, tlsNode: cm.tlsNode, tlsConfig: cm.tlsConfig, packetEngine: cm.packetEngine, preferUDP: true}
 	}
 	relay := cm.udpRelay
 	cm.mu.Unlock()
+	if cm.tlsNode.UDPPort != 0 {
+		// A UDP association gets a SOCKS success only after the selected path answers.
+		if _, err := MeasureTunnelLatency(relay); err != nil {
+			return nil, err
+		}
+	}
 	return relay.OpenStream()
 }
 
@@ -405,27 +427,27 @@ func listenTunnelUDP(network, addr string) (net.PacketConn, error) {
 	return pc, err
 }
 
-func (cm *ClientMux) dialUDP() (net.Conn, error) {
+func (cm *ClientMux) dialUDP() (net.Conn, *RTPPacketConn, error) {
 	network := "udp4"
 	if cm.serverIP.To4() == nil {
 		network = "udp6"
 	}
 	rawPC, err := listenTunnelUDP(network, ":0")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	rtpPC := NewClientRTPPacketConn(rawPC, cm.serverIP, cm.packetEngine)
 
+	rtpPC.fixedPort = cm.tlsNode.UDPPort
 	kcpConn, err := kcp.NewConn2(&net.UDPAddr{IP: cm.serverIP, Port: PortMin}, nil, 10, 3, rtpPC)
 	if err != nil {
 		_ = rawPC.Close()
-		return nil, err
+		return nil, nil, err
 	}
 	tuneKCP(kcpConn, 1150)
 
-	cm.udpPath = rtpPC
-	return kcpConn, nil
+	return kcpConn, rtpPC, nil
 }
 
 func (cm *ClientMux) Reset() {
@@ -450,6 +472,8 @@ func (cm *ClientMux) Close() {
 }
 
 func (cm *ClientMux) closeLocked() {
+	cm.activeTransport.Store(0)
+	cm.tcpPath = nil
 	if cm.udpPath != nil {
 		_ = cm.udpPath.Close()
 		cm.udpPath = nil
@@ -470,7 +494,7 @@ func runHeadlessClient(cfgPath string) {
 		log.Fatalf("[Client] 配置解析失败: %v", err)
 	}
 
-	if cfg.TLSPort == 0 {
+	if cfg.TLSPort == 0 || cfg.UDPPort != 0 {
 		go SyncTimeOffset()
 	}
 	cm, err := newNodeMux(cfg.ServerIP, cfg.MasterKey, cfg.TLSNode)

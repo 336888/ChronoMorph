@@ -25,7 +25,7 @@ func (g *GUIController) BuildDiagReport() string {
 	listen := g.cfg.Listen
 	running := g.running
 	cm := g.cm
-	tlsPort := g.cfg.TLSPort
+	tlsPort, udpPort := g.cfg.TLSPort, g.cfg.UDPPort
 	sysProxy := g.sysProxyOn
 	g.mu.Unlock()
 
@@ -38,7 +38,9 @@ func (g *GUIController) BuildDiagReport() string {
 	sb.WriteString(fmt.Sprintf("Server IP    : %s\n", ip))
 	sb.WriteString(fmt.Sprintf("Listen       : %s\n", listen))
 	sb.WriteString(fmt.Sprintf("Tunnel Active: %v | SysProxy: %v | TUN: %v\n", running, sysProxy, GlobalTUN.IsActive()))
-	if tlsPort != 0 {
+	if udpPort != 0 {
+		fmt.Fprintf(&sb, "Transport    : Auto TCP %d / UDP %d (bulk: %s)\n", tlsPort, udpPort, cm.transportName())
+	} else if tlsPort != 0 {
 		fmt.Fprintf(&sb, "Transport    : TLS/TCP %d\n", tlsPort)
 	} else {
 		fmt.Fprintf(&sb, "Transport    : UDP (cm://), current port %d\n", LiveStats.activePort.Load())

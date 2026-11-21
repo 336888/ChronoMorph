@@ -90,7 +90,7 @@ type desktopUI struct {
 	isError                                           bool
 	running, proxy, global, tun, auto                 bool
 	ip, listen, nodeName                              string
-	tlsPort                                           int
+	tlsPort, udpPort                                  int
 	current                                           *ClientMux
 	profiles                                          []NodeProfile
 	active                                            int
@@ -195,7 +195,7 @@ func (u *desktopUI) refresh() {
 		return
 	}
 	u.running, u.proxy, u.global = g.running, g.sysProxyOn, g.router.IsGlobalMode()
-	u.ip, u.listen, u.tlsPort = g.cfg.ServerIP, g.cfg.Listen, g.cfg.TLSPort
+	u.ip, u.listen, u.tlsPort, u.udpPort = g.cfg.ServerIP, g.cfg.Listen, g.cfg.TLSPort, g.cfg.UDPPort
 	u.profiles = append(u.profiles[:0], g.cfg.Profiles...)
 	u.active = g.cfg.ActiveIndex
 	u.nodeName = ""
@@ -240,7 +240,9 @@ func (u *desktopUI) refresh() {
 				name = p.ServerIP
 			}
 			t := "UDP"
-			if p.TLSPort != 0 {
+			if p.UDPPort != 0 {
+				t = fmt.Sprintf("自动 · TCP %d / UDP %d", p.TLSPort, p.UDPPort)
+			} else if p.TLSPort != 0 {
 				t = "TLS/TCP " + strconv.Itoa(p.TLSPort)
 			}
 			row := fmt.Sprintf("  %s     %s     %s", name, p.ServerIP, t)
@@ -522,6 +524,9 @@ func (u *desktopUI) copy(s string) error {
 func (u *desktopUI) transport() string {
 	if u.ip == "" {
 		return "尚未配置节点"
+	}
+	if u.udpPort != 0 {
+		return "TCP + UDP 自动 · 网页通道 " + u.current.transportName()
 	}
 	if u.tlsPort != 0 {
 		return fmt.Sprintf("TLS 1.3 / TCP · %s", net.JoinHostPort(u.ip, strconv.Itoa(u.tlsPort)))

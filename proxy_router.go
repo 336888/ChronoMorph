@@ -134,7 +134,7 @@ func dialWithRouting(target string, cm *ClientMux, router *Router) (io.ReadWrite
 			return stream, nil
 		}
 		_ = stream.Close()
-		if errors.Is(err, errTargetRejected) || !cm.discardSilentUDP(sess, started) || attempt != 0 {
+		if errors.Is(err, errTargetRejected) || !cm.discardSilentPath(sess, started) || attempt != 0 {
 			return nil, err
 		}
 		// No application bytes have been forwarded yet. Retry only the setup.
@@ -159,10 +159,10 @@ func sendDialRequest(stream net.Conn, target string, mode byte) error {
 	if mode == CmdDialReady {
 		var ready [1]byte
 		if _, err := io.ReadFull(stream, ready[:]); err != nil {
-			return fmt.Errorf("UDP 节点未确认收到请求: %w", err)
+			return fmt.Errorf("节点未确认收到请求: %w", err)
 		}
 		if ready[0] != CmdDialReady {
-			return fmt.Errorf("UDP 节点返回了无效的确认")
+			return fmt.Errorf("节点返回了无效的确认")
 		}
 		_ = stream.SetDeadline(time.Now().Add(10 * time.Second))
 	}

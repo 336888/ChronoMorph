@@ -129,7 +129,7 @@ func (g *GUIController) installConfigLocked(cfg *Config, next *ClientMux) error 
 		old := g.cm
 		g.cm = next
 		old.Close()
-		if next.tlsConfig == nil {
+		if next.packetEngine != nil {
 			go SyncTimeOffset()
 		}
 	}
