@@ -20,7 +20,7 @@ func (g *GUIController) StartAutoFailover(stopCh <-chan struct{}) {
 				running, cm, cfg := g.running, g.cm, g.cfg
 				g.mu.Unlock()
 
-				if !running || cm == nil || len(cfg.Profiles) < 2 || cm.tlsConfig != nil || GlobalTUN.IsActive() {
+				if !running || cm == nil {
 					consecutiveFails = 0
 					continue
 				}
@@ -35,7 +35,13 @@ func (g *GUIController) StartAutoFailover(stopCh <-chan struct{}) {
 				consecutiveFails++
 				log.Printf("[Failover] 当前节点探活失败 (%d/3)", consecutiveFails)
 				if consecutiveFails >= 3 {
-					g.tryStandby(stopCh, cm, cfg)
+					if cm.entry != nil {
+						cm.entry.Reset()
+					}
+					cm.Reset()
+					if !nodeReachable(cm) && len(cfg.Profiles) > 1 {
+						g.tryStandby(stopCh, cm, cfg)
+					}
 					consecutiveFails = 0
 				}
 			}
@@ -71,7 +77,7 @@ func (g *GUIController) tryStandby(stop <-chan struct{}, active *ClientMux, snap
 		}
 		idx := (start + offset) % len(snapshot.Profiles)
 		p := snapshot.Profiles[idx]
-		if p.ServerIP == snapshot.ServerIP && p.MasterKey == snapshot.MasterKey && p.TLSNode == snapshot.TLSNode {
+		if p.selectedBy(snapshot) || !snapshot.allowStandby(p) {
 			continue
 		}
 		probe, err := g.newProbe(p)
@@ -89,7 +95,8 @@ func (g *GUIController) tryStandby(stop <-chan struct{}, active *ClientMux, snap
 		}
 		g.mu.Lock()
 		delete(g.probes, probe)
-		if !g.running || g.cm != active || g.cfg != snapshot || GlobalTUN.IsActive() {
+		if !g.running || g.cm != active || g.cfg != snapshot {
+			GlobalTUN.unpin(probe)
 			g.mu.Unlock()
 			probe.Close()
 			return

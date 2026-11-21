@@ -20,6 +20,10 @@ func (g *GUIController) newProbe(p NodeProfile) (*ClientMux, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := GlobalTUN.pin(cm); err != nil {
+		cm.Close()
+		return nil, err
+	}
 	if g.probes == nil {
 		g.probes = make(map[*ClientMux]struct{})
 	}
@@ -30,6 +34,7 @@ func (g *GUIController) newProbe(p NodeProfile) (*ClientMux, error) {
 func (g *GUIController) finishProbe(probe *ClientMux) {
 	probe.Close()
 	g.mu.Lock()
+	GlobalTUN.unpin(probe)
 	delete(g.probes, probe)
 	g.mu.Unlock()
 }

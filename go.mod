@@ -6,6 +6,7 @@ toolchain go1.27.4
 
 require (
 	github.com/getlantern/systray v1.2.2
+	github.com/miekg/dns v1.1.73
 	github.com/xjasonlyu/tun2socks/v2 v2.6.0
 	github.com/xtaci/kcp-go/v5 v5.6.13
 	github.com/xtaci/smux v1.5.61
@@ -15,6 +16,7 @@ require (
 	golang.org/x/net v0.62.0
 	golang.org/x/sys v0.49.0
 	golang.zx2c4.com/wireguard v0.0.0-20250521234502-f333402bd9cb
+	golang.zx2c4.com/wireguard/windows v1.1.1
 )
 
 require (
@@ -41,7 +43,6 @@ require (
 	github.com/klauspost/cpuid/v2 v2.4.2 // indirect
 	github.com/klauspost/reedsolomon v1.12.0 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
-	github.com/miekg/dns v1.1.73 // indirect
 	github.com/molecule-man/go-brrr v1.2.0 // indirect
 	github.com/oxtoacart/bpool v0.0.0-20190530202638-03653db5a59c // indirect
 	github.com/pion/transport/v5 v5.1.5 // indirect

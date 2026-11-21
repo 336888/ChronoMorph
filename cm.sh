@@ -379,7 +379,16 @@ EOF
 )
 
 show_status() {
-    systemctl status chronomorph --no-pager -l | head -n 15
+    systemctl status chronomorph --no-pager -l | head -n 15 || true
+    if [[ -r "$CFG_FILE" ]]; then
+        jq -r '[if .reality and (.website.only | not) then "REALITY " + .reality.listen else empty end,
+                if .website and (.reality.only | not) then "HTTPS " + .website.listen else empty end,
+                if (.website.only or .reality.only) then empty else "UDP " + (.listen // ""), (if .tls_listen then "TLS " + .tls_listen else empty end) end] | "配置入口  " + join("  /  ")' "$CFG_FILE"
+    fi
+    if command -v ss >/dev/null; then
+        echo '当前进程监听的 TCP / UDP 地址'
+        ss -H -lnptu | awk '/"chronomorph"|"cm-reality"/ {print $1, $5}'
+    fi
     nft list table inet chronomorph 2>/dev/null || echo -e "${RED}未检测到跳频规则${PLAIN}"
     chronyc tracking | grep -E "System time|Leap status" || true
 }

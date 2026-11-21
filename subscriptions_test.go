@@ -9,8 +9,22 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/miekg/dns"
 	"golang.org/x/net/dns/dnsmessage"
 )
+
+func blockedDNS(wire []byte, router *Router) []byte {
+	var q dns.Msg
+	if q.Unpack(wire) != nil {
+		return nil
+	}
+	resp := localDNSReply(router, &q)
+	if resp == nil {
+		return nil
+	}
+	b, _ := resp.Pack()
+	return b
+}
 
 func TestSubscriptionRulesAndDNS(t *testing.T) {
 	src, err := adSources([]string{"https://github.com/217heidai/adblockfilters", defaultAdSource})

@@ -301,19 +301,7 @@ func RunWindowsGUI(cfgPath string) {
 	})
 
 	mux.HandleFunc("/api/tun", func(w http.ResponseWriter, r *http.Request) {
-		if GlobalTUN.IsActive() {
-			GlobalTUN.StopTUN()
-			w.WriteHeader(200)
-			return
-		}
-		ctrl.mu.Lock()
-		running, listen, ip, cm := ctrl.running, ctrl.proxyAddressLocked(), ctrl.cfg.ServerIP, ctrl.cm
-		ctrl.mu.Unlock()
-		if !running {
-			http.Error(w, "请先启动加密隧道", 400)
-			return
-		}
-		if err := GlobalTUN.StartTUN(listen, ip, cm, ctrl.router); err != nil {
+		if err := ctrl.toggleTUN(); err != nil {
 			http.Error(w, err.Error(), 500)
 			return
 		}

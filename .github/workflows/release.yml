@@ -8,7 +8,7 @@ on:
       tag:
         description: Version tag
         required: true
-        default: v1.4.5
+        default: v1.4.6
 
 permissions:
   contents: write

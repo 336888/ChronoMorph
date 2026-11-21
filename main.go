@@ -39,6 +39,9 @@ const (
 )
 
 type Config struct {
+	LockEntryType   bool     `json:"lock_entry_type,omitempty"`
+	TUNBlockIPv6    bool     `json:"tun_block_ipv6,omitempty"`
+	DNSUpstreams    []string `json:"dns_upstreams,omitempty"`
 	ChainEntry      string   `json:"chain_entry,omitempty"`
 	AdSubscriptions []string `json:"ad_subscriptions,omitempty"`
 	AdAllowDomains  []string `json:"ad_allow_domains,omitempty"`
@@ -307,6 +310,10 @@ func handleServerStream(stream *smux.Stream) {
 		_, _ = stream.Write([]byte{CmdCapabilities, capDialAck | capDialProgress})
 		return
 	}
+	if cmd[0] == cmdQualityDownload {
+		serveQualityBlock(stream)
+		return
+	}
 	if cmd[0] == CmdPing {
 		_, _ = stream.Write([]byte{CmdPing})
 		return
@@ -518,7 +525,7 @@ func (cm *ClientMux) discardSilentPath(session *smux.Session, since time.Time) b
 
 // Give game and voice associations their own transport and congestion queue.
 // All UDP associations on a node share it, and it is created on first use.
-func (cm *ClientMux) openUDPRelayStream() (*smux.Stream, error) {
+func (cm *ClientMux) gameLane() (*ClientMux, error) {
 	cm.mu.Lock()
 	if cm.closed {
 		cm.mu.Unlock()
@@ -529,6 +536,13 @@ func (cm *ClientMux) openUDPRelayStream() (*smux.Stream, error) {
 	}
 	relay := cm.udpRelay
 	cm.mu.Unlock()
+	return relay, nil
+}
+func (cm *ClientMux) openUDPRelayStream() (*smux.Stream, error) {
+	relay, err := cm.gameLane()
+	if err != nil {
+		return nil, err
+	}
 	if cm.tlsNode.UDPPort != 0 {
 		// A UDP association gets a SOCKS success only after the selected path answers.
 		if _, err := MeasureTunnelLatency(relay); err != nil {

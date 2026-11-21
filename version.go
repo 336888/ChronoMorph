@@ -27,7 +27,7 @@ func printLicenses(w io.Writer) error {
 }
 
 var (
-	AppVersion = "v1.4.5"
+	AppVersion = "v1.4.6"
 	BuildTime  = "dev"
 )
 

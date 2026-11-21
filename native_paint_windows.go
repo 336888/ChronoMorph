@@ -30,7 +30,7 @@ func (u *desktopUI) paint(dc uintptr) {
 	}
 	rounded(dc, u.rect(22, 510, 8, 8), u.px(4), dot, dot)
 	u.text(dc, 38, 498, 140, 31, 12, 500, muted, state)
-	title := map[int]string{homePage: "连接概览", livePage: "实时连接", benchPage: "节点延迟测试", nodesPage: "我的节点", logsPage: "连接日志", prefsPage: "设置", importPage: "导入节点", manualPage: "手动添加节点", chainPage: "链式代理", adsPage: "去广告", domainPage: "域名检查与放行"}[u.page]
+	title := map[int]string{homePage: "连接概览", livePage: "实时连接", benchPage: "节点延迟测试", healthPage: "路由与 DNS 检查", nodesPage: "我的节点", logsPage: "连接日志", prefsPage: "设置", importPage: "导入节点", manualPage: "手动添加节点", chainPage: "链式代理", adsPage: "去广告", domainPage: "域名检查与放行"}[u.page]
 	u.text(dc, 212, 18, 435, 51, 29, 700, fg, title)
 	switch u.page {
 	case homePage:
@@ -68,6 +68,9 @@ func (u *desktopUI) paint(dc uintptr) {
 		u.card(dc, 211, 90, 607, 397, panel)
 		u.text(dc, 230, 96, 205, 28, 14, 600, fg, "筛选目标、进程或协议")
 		u.text(dc, 230, 173, 565, 25, 13, 500, muted, u.flowStatus)
+	case healthPage:
+		u.card(dc, 211, 92, 607, 369, panel)
+		u.text(dc, 230, 98, 563, 31, 15, 600, fg, "检查当前路由、节点应答与 DNS 解析")
 	case benchPage:
 		u.card(dc, 211, 92, 607, 369, panel)
 		u.text(dc, 230, 104, 563, 30, 15, 600, fg, "节点往返延迟 · 按延迟排序，保留当前节点")
@@ -84,13 +87,13 @@ func (u *desktopUI) paint(dc uintptr) {
 		u.text(dc, 233, 102, 450, 31, 16, 600, fg, "本地 HTTP / SOCKS4 / SOCKS5 监听地址")
 		u.card(dc, 211, 211, 607, 148, panel)
 		u.text(dc, 233, 221, 385, 28, 17, 600, fg, "TUN 虚拟网卡")
-		u.text(dc, 233, 248, 440, 20, 12, 400, muted, "接管 IPv4，内置驱动，需要管理员权限")
+		u.text(dc, 233, 248, 440, 20, 12, 400, muted, "接管 IPv4 与公网 IPv6。路由检查位于连接日志。")
 		u.line(dc, 232, 284, 794, 284, 1, edge)
 		u.text(dc, 233, 299, 395, 27, 17, 600, fg, "登录 Windows 后启动")
 		u.text(dc, 233, 327, 418, 21, 12, 400, muted, "对当前 Windows 用户生效")
 		u.card(dc, 211, 375, 607, 85, panel)
 		u.text(dc, 233, 388, 440, 26, 17, 600, fg, "仅 TLS 传输")
-		u.text(dc, 233, 419, 445, 23, 12, 400, muted, "到节点的网页、游戏和测速流量仅走 TLS。")
+		u.text(dc, 233, 419, 286, 23, 12, 400, muted, "限制到节点的传输及自动切换。")
 	case chainPage:
 		u.card(dc, 211, 92, 607, 366, panel)
 		u.text(dc, 231, 106, 565, 30, 17, 600, fg, "前置 CM 节点")

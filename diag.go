@@ -48,6 +48,7 @@ func (g *GUIController) BuildDiagReport() string {
 	} else {
 		fmt.Fprintf(&sb, "Transport    : UDP (cm://), current port %d\n", LiveStats.activePort.Load())
 	}
+	fmt.Fprintf(&sb, "Route        : %s\nCoverage     : %s\n", cm.routeLabel(), GlobalTUN.diagnostics())
 	if cm != nil {
 		cm.mu.Lock()
 		if !cm.lastFailureAt.IsZero() {

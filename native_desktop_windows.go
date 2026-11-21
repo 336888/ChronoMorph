@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net"
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf16"
 	"unsafe"
 )
@@ -34,6 +36,7 @@ const (
 	manualPage
 	domainPage
 	benchPage
+	healthPage
 )
 const (
 	navHome = iota + 100
@@ -74,6 +77,11 @@ const (
 	copyFlow
 	openBench
 	runBench
+	qualityAction
+	routeCheck
+	lockEntryAction
+	block6Action
+	recheckAction
 )
 const (
 	nodesList = 200 + iota
@@ -91,6 +99,7 @@ const (
 	flowList
 	flowDetail
 	benchEdit
+	healthEdit
 )
 
 type nativeControl struct {
@@ -99,6 +108,7 @@ type nativeControl struct {
 	label string
 }
 type desktopResult struct {
+	health         string
 	benchText      string
 	originPage     int
 	message        string
@@ -109,6 +119,9 @@ type desktopResult struct {
 	measuredClient *ClientMux
 }
 type desktopUI struct {
+	qualityCancel                                     context.CancelFunc
+	qualitySeq                                        uint64
+	qualityResults                                    chan qualityResult
 	liveIDs                                           []uint64
 	liveRows                                          string
 	owners                                            map[uint64]string
@@ -142,10 +155,15 @@ type desktopUI struct {
 	logs                                              string
 }
 
+type qualityResult struct {
+	seq    uint64
+	report string
+}
+
 var activeDesktop *desktopUI
 
 func startDesktop(ctrl *GUIController) (*desktopUI, error) {
-	u := &desktopUI{ctrl: ctrl, fonts: map[[2]int]uintptr{}, controls: map[int]*nativeControl{}, results: make(chan desktopResult, 1), rtt: -1, active: -1}
+	u := &desktopUI{ctrl: ctrl, qualityResults: make(chan qualityResult, 2), fonts: map[[2]int]uintptr{}, controls: map[int]*nativeControl{}, results: make(chan desktopResult, 1), rtt: -1, active: -1}
 	ready := make(chan error, 1)
 	go u.run(ready)
 	return u, <-ready
@@ -181,6 +199,12 @@ func (u *desktopUI) setupControls() {
 	u.button(manualAction, nodesPage, 223, 415, 140, 36, "手动添加 UDP")
 	u.button(openBench, nodesPage, 648, 415, 142, 36, "节点延迟测试")
 	u.input(benchEdit, benchPage, 230, 141, 563, 240, "EDIT", 0x200000|0x4|0x40|0x800)
+	u.button(qualityAction, benchPage, 230, 399, 215, 37, "60 秒线路质量测试")
+	u.input(healthEdit, healthPage, 230, 135, 565, 220, "EDIT", 0x200000|0x4|0x40|0x800)
+	u.button(recheckAction, healthPage, 650, 395, 142, 37, "重新检查")
+	u.button(block6Action, healthPage, 230, 395, 285, 37, "IPv6 经隧道")
+	u.button(routeCheck, logsPage, 225, 440, 160, 37, "检查路由与 DNS")
+	u.button(lockEntryAction, prefsPage, 530, 398, 146, 36, "锁定备用类型")
 	u.button(runBench, benchPage, 646, 399, 147, 37, "重新测试")
 	u.input(logEdit, logsPage, 220, 102, 581, 320, "EDIT", 0x200000|0x4|0x40|0x800)
 	u.button(copyLog, logsPage, 672, 440, 129, 37, "复制诊断报告")
@@ -211,6 +235,12 @@ func (u *desktopUI) setupControls() {
 }
 
 func (u *desktopUI) setPage(page int) {
+	if u.qualityCancel != nil {
+		u.qualityCancel()
+		u.qualityCancel = nil
+		u.qualitySeq++
+		u.label(qualityAction, "60 秒线路质量测试")
+	}
 	u.page = page
 	u.message = ""
 	u.isError = false
@@ -312,6 +342,8 @@ func (u *desktopUI) refresh() {
 	u.ip, u.listen, u.tlsPort, u.udpPort = g.cfg.ServerIP, g.cfg.Listen, g.cfg.TLSPort, g.cfg.UDPPort
 	u.profiles = append(u.profiles[:0], g.cfg.Profiles...)
 	u.webName, u.realityName = g.cfg.WebName, g.cfg.RealityName
+	block6 := g.cfg.TUNBlockIPv6
+	locked := g.cfg.LockEntryType
 	u.tlsOnly = g.cfg.TLSOnly
 	u.entryLabel = ""
 	if entry, ok := g.cfg.entryProfile(); ok {
@@ -347,6 +379,16 @@ func (u *desktopUI) refresh() {
 	u.label(modeAction, mode)
 	u.label(tunAction, onLabel(u.tun))
 	u.label(autoAction, onLabel(u.auto))
+	lockLabel := "锁定备用类型"
+	if locked {
+		lockLabel = "备用类型已锁定"
+	}
+	u.label(lockEntryAction, lockLabel)
+	v6 := "IPv6 经隧道 · 点击切换"
+	if block6 {
+		v6 = "阻止 TUN 内 IPv6 · 点击切换"
+	}
+	u.label(block6Action, v6)
 	u.label(tlsOnlyAction, onLabel(u.tlsOnly))
 	pauseLabel := "暂停过滤"
 	if u.adPaused {
@@ -430,8 +472,23 @@ func (u *desktopUI) work(task func() desktopResult) {
 }
 func (u *desktopUI) finish() {
 	select {
+	case result := <-u.qualityResults:
+		if u.page == benchPage && result.seq == u.qualitySeq {
+			u.qualityCancel()
+			u.qualityCancel = nil
+			u.benchText = result.report
+			setText(u.controls[benchEdit].h, result.report)
+			u.label(qualityAction, "60 秒线路质量测试")
+		}
+		return
+	default:
+	}
+	select {
 	case r := <-u.results:
 		u.busy = false
+		if r.health != "" && u.page == healthPage {
+			setText(u.controls[healthEdit].h, strings.ReplaceAll(r.health, "\n", "\r\n"))
+		}
 		if r.benchText != "" {
 			u.benchText = r.benchText
 			setText(u.controls[benchEdit].h, r.benchText)
@@ -478,6 +535,50 @@ func (u *desktopUI) command(id int) {
 	switch id {
 	case copyFlow, dropFlow:
 		u.flowAction(id)
+	case lockEntryAction:
+		u.localFeedback("已保存备用入口策略", g.toggleLockEntry())
+	case block6Action:
+		g.mu.Lock()
+		if GlobalTUN.IsActive() {
+			g.mu.Unlock()
+			u.feedback("先关闭 TUN，再更改 IPv6 策略", true)
+			return
+		}
+		cfg := *g.cfg
+		cfg.TUNBlockIPv6 = !cfg.TUNBlockIPv6
+		err := g.installConfigLocked(&cfg, nil)
+		g.mu.Unlock()
+		u.localFeedback("IPv6 策略已保存", err)
+	case routeCheck, recheckAction:
+		u.setPage(healthPage)
+		setText(u.controls[healthEdit].h, "正在检查系统路由、节点应答和本地 DNS…")
+		u.work(func() desktopResult { return desktopResult{originPage: healthPage, health: g.networkCheck()} })
+	case qualityAction:
+		if u.qualityCancel != nil {
+			u.qualityCancel()
+			return
+		}
+		g.mu.Lock()
+		cm := g.cm
+		g.mu.Unlock()
+		if cm == nil {
+			u.feedback("请先启动连接", true)
+			return
+		}
+		setText(u.controls[benchEdit].h, "测量本机到出口的延迟，前 30 秒不产生下载，后 30 秒最多下载 128 MiB…")
+		ctx, cancel := context.WithCancel(context.Background())
+		u.qualityCancel = cancel
+		u.qualitySeq++
+		seq := u.qualitySeq
+		u.label(qualityAction, "停止质量测试")
+		go func() {
+			report := measureQuality(ctx, cm, 30*time.Second, 128<<20)
+			if ctx.Err() != nil {
+				report += "\r\n测试已停止"
+			}
+			u.qualityResults <- qualityResult{seq, report}
+			notifyWindow(u.hwnd, msgResult)
+		}()
 	case openBench, runBench:
 		u.setPage(benchPage)
 		setText(u.controls[benchEdit].h, "正在测试已保存的节点…")
@@ -678,16 +779,7 @@ func (u *desktopUI) command(id int) {
 		})
 	case tunAction:
 		u.work(func() desktopResult {
-			if GlobalTUN.IsActive() {
-				GlobalTUN.StopTUN()
-				return desktopResult{}
-			}
-			g.mu.Lock()
-			defer g.mu.Unlock()
-			if !g.running {
-				return desktopResult{err: fmt.Errorf("请先启动连接")}
-			}
-			return desktopResult{err: GlobalTUN.StartTUN(g.proxyAddressLocked(), g.cfg.ServerIP, g.cm, g.router)}
+			return desktopResult{err: g.toggleTUN()}
 		})
 	case tlsOnlyAction:
 		enable := !u.tlsOnly
@@ -755,8 +847,11 @@ func (u *desktopUI) copy(s string) error {
 	return nil
 }
 func (u *desktopUI) transport() string {
+	if u.current != nil {
+		return u.current.routeLabel()
+	}
 	if u.entryLabel != "" {
-		return u.entryLabel + " → " + u.nodeName
+		return "配置 · " + u.entryLabel + " → " + u.nodeName
 	}
 	if u.ip == "" {
 		return "尚未配置节点"

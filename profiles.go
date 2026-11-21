@@ -97,6 +97,18 @@ func (g *GUIController) setTLSOnly(enabled bool) error {
 	return nil
 }
 
+func (cfg *Config) allowStandby(p NodeProfile) bool {
+	// The configured first hop is retained by cfg.nodeMux for chained exits.
+	return !(cfg.LockEntryType || cfg.TLSPort != 0 && cfg.UDPPort == 0 || cfg.RealityName != "" || cfg.WebName != "") || p.scheme() == cfg.TLSNode.scheme()
+}
+func (g *GUIController) toggleLockEntry() error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	cfg := *g.cfg
+	cfg.LockEntryType = !cfg.LockEntryType
+	return g.installConfigLocked(&cfg, nil)
+}
+
 func (p NodeProfile) selectedBy(cfg *Config) bool {
 	return p.ServerIP == cfg.ServerIP && p.MasterKey == cfg.MasterKey && p.TLSNode == cfg.TLSNode
 }
@@ -199,9 +211,6 @@ func (g *GUIController) useConfigLocked(cfg *Config) error {
 		probe.Close()
 	}
 	if changed && g.running {
-		if GlobalTUN.IsActive() {
-			return fmt.Errorf("请先关闭 TUN，再切换节点或传输模式")
-		}
 		var err error
 		next, err = cfg.nodeMux(cfg.ServerIP, cfg.MasterKey, cfg.TLSNode)
 		if err != nil {
@@ -213,8 +222,16 @@ func (g *GUIController) useConfigLocked(cfg *Config) error {
 
 // next, when supplied, is owned by this method, including on error.
 func (g *GUIController) installConfigLocked(cfg *Config, next *ClientMux) error {
+	if next != nil {
+		if err := GlobalTUN.pin(next); err != nil {
+			GlobalTUN.unpin(next)
+			next.Close()
+			return err
+		}
+	}
 	if err := SaveConfigAtomic(g.cfgPath, cfg); err != nil {
 		if next != nil {
+			GlobalTUN.unpin(next)
 			next.Close()
 		}
 		return err
@@ -223,6 +240,7 @@ func (g *GUIController) installConfigLocked(cfg *Config, next *ClientMux) error 
 	if next != nil {
 		old := g.cm
 		g.cm = next
+		GlobalTUN.adopt(old, next)
 		old.Close()
 		next.startClockSync()
 	}
