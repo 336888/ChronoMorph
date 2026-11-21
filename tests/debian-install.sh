@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -eu
-source "$(dirname "$0")/../cm.sh"
+installer=$(realpath "$(dirname "$0")/../cm.sh")
+source "$installer"
 root=$(mktemp -d)
 trap 'rm -rf "$root"' EXIT
 SCRIPT_DIR="$root/package"
@@ -127,3 +128,18 @@ activate_package "$root/activate" "$name"
 cmp "$root/before-config" "$CFG_FILE"
 [[ $(cat "$CFG_DIR/reality.key") == 'existing private identity' ]]
 echo 'PASS server, helper and menu upgrade or roll back together; saved node identity preserved'
+
+
+# Sourcing the precise release script matches offline installs. A renamed standalone
+# script or a shared directory never supplies binaries or checksums to a root upgrade.
+trusted="$root/explicit-package"
+mkdir -m 755 "$trusted"
+cp "$installer" "$trusted/cm.sh"
+touch "$trusted/$name" "$trusted/cm-reality" "$trusted/SHA256SUMS.txt"
+chmod 644 "$trusted/SHA256SUMS.txt"
+bash -c 'source "$1/cm.sh"; is_local_package "$2"' _ "$trusted" "$name"
+cp "$trusted/cm.sh" "$trusted/standalone.sh"
+if bash -c 'source "$1/standalone.sh"; is_local_package "$2"' _ "$trusted" "$name"; then exit 1; fi
+chmod 777 "$trusted"
+if bash -c 'source "$1/cm.sh"; is_local_package "$2"' _ "$trusted" "$name"; then exit 1; fi
+echo 'PASS standalone and shared-directory installs ignore adjacent executable files'

@@ -64,6 +64,7 @@ github_download() {
 
 fetch_release_package() (
     set +x
+    umask 077
     local work=$1 name=$2 pkg="chronomorph-debian-${2##*-}" api="https://api.github.com/repos/$GITHUB_REPO/releases"
     local token="${GH_TOKEN:-${GITHUB_TOKEN:-}}" file id release=latest
     if [[ -n ${3:-} ]]; then
@@ -96,11 +97,23 @@ fetch_release_package() (
     verify_package "$work/$pkg" "$name"
 )
 
+is_local_package() {
+    local name=$1 mode path
+    [[ ${BASH_SOURCE[0]} -ef "$SCRIPT_DIR/cm.sh" && "$SCRIPT_DIR" != "$(dirname "$BIN_PATH")" &&
+       -f "$SCRIPT_DIR/$name" && -f "$SCRIPT_DIR/cm-reality" &&
+       -f "$SCRIPT_DIR/SHA256SUMS.txt" && ! -L "$SCRIPT_DIR/SHA256SUMS.txt" ]] || return 1
+    # A standalone script in a shared download directory must not trust adjacent files.
+    for path in "$SCRIPT_DIR" "$SCRIPT_DIR/SHA256SUMS.txt"; do
+        mode=$(stat -Lc %a -- "$path") || return 1
+        (( (8#$mode & 0022) == 0 )) || return 1
+    done
+}
+
 install_release() (
     check_root
     local name package work
     name=$(release_binary_name) || exit 1
-    if [[ -f "$SCRIPT_DIR/$name" && -f "$SCRIPT_DIR/cm-reality" && -f "$SCRIPT_DIR/SHA256SUMS.txt" && "$SCRIPT_DIR" != "$(dirname "$BIN_PATH")" ]]; then
+    if is_local_package "$name"; then
         do_install
         exit
     fi
