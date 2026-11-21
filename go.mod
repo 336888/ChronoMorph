@@ -7,16 +7,19 @@ toolchain go1.27.4
 require (
 	github.com/getlantern/systray v1.2.2
 	github.com/miekg/dns v1.1.73
+	github.com/oschwald/maxminddb-golang/v2 v2.9.1
 	github.com/xjasonlyu/tun2socks/v2 v2.6.0
 	github.com/xtaci/kcp-go/v5 v5.6.13
 	github.com/xtaci/smux v1.5.61
 	github.com/xtls/reality v0.0.0-20261108101329-4bb46b2afd8b
 	github.com/xtls/xray-core v1.260327.1-0.20261109052709-676eaf66f8f0
+	go.etcd.io/bbolt v1.5.0
 	golang.org/x/crypto v0.58.0
 	golang.org/x/net v0.62.0
-	golang.org/x/sys v0.49.0
+	golang.org/x/sys v0.50.0
 	golang.zx2c4.com/wireguard v0.0.0-20250521234502-f333402bd9cb
 	golang.zx2c4.com/wireguard/windows v1.1.1
+	google.golang.org/protobuf v1.36.12
 )
 
 require (
@@ -64,7 +67,6 @@ require (
 	golang.org/x/time v0.14.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 	google.golang.org/grpc v1.85.0 // indirect
-	google.golang.org/protobuf v1.36.12 // indirect
 	gvisor.dev/gvisor v0.0.0-20260122175437-89a5d21be8f0 // indirect
 	layeh.com/gopher-luar v1.0.11 // indirect
 )

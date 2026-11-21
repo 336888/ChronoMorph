@@ -14,15 +14,37 @@ sudo bash ./cm.sh --install
 
 完成本次更新后，后续直接运行 `sudo cm --install`，或在 `sudo cm` 菜单选 **1**。升级会短暂重启服务，并检查已启用的入口。脚本沿用已有用户和节点密钥；新版服务验证失败时恢复上个版本。离线安装可解压同版本的 Debian 完整包，从包内运行同一条命令，系统依赖仍通过 apt 安装。
 
+在 `sudo cm` 里选 **5** 查看当前并发流数及上限（512）、因满载被拒的次数、请求头和半关闭连接的超时次数，以及各用户本月的收发流量。流量按服务端本地日历月统计，跨月自动恢复配额。拒绝和超时次数从本次服务启动开始累计。服务端等待完整请求头最多 10 秒。TCP 一侧结束发送后，反向传输连续 2 分钟没有写入进展才回收连接。
+
 ## Windows 客户端
 
 Slacker 沿用 ChronoMorph 的节点链接、客户端配置和 Debian 服务目录。Windows 升级时先从托盘退出旧版，将新版 EXE 放在原客户端目录，保留 `client.json`。
 
+- **加速器**首页可选择线路、启动或停止连接、测量节点延迟，并查看当前连接的收发速率和最近的速率曲线。
+- **资源**列出 geosite.dat、geoip.metadb 和 GeoLite2-ASN.mmdb。可单独同步或同步全部。「编辑」可修改 HTTPS 下载地址和本地修订。同步后显示时间和版本摘要，已有缓存可供离线使用。
 - **去广告**管理域名订阅、暂停过滤、查询命中规则和维护放行名单。可直接添加 217heidai 订阅。
-- **分流规则**支持本地规则和 blackmatrix7 的 Surge 文本订阅。每行本地规则写作 `DOMAIN-SUFFIX,example.com,DIRECT`。可用动作是 DIRECT、PROXY、REJECT，可用类型是 DOMAIN、DOMAIN-SUFFIX、DOMAIN-KEYWORD、IP-CIDR 和 IP-CIDR6。每行订阅写作 `DIRECT https://…/xxx.list`。本地规则优先，首条命中生效。保存并更新后可测试域名或 IP。更新失败保留已有规则，重启可从缓存载入。
+- **分流规则**支持本地规则和 blackmatrix7 的 Surge 文本订阅。每行本地规则写作 `DOMAIN-SUFFIX,example.com,DIRECT`。可用动作是 DIRECT、PROXY、REJECT，支持 DOMAIN、DOMAIN-SUFFIX、DOMAIN-KEYWORD、IP-CIDR、IP-CIDR6、GEOSITE、GEOIP 和 IP-ASN。每行订阅写作 `DIRECT https://…/xxx.list`。本地规则优先，首条命中生效。保存并更新后可测试域名或 IP。更新失败保留已有规则，重启可从缓存载入。
 - **进程模式**可以分别创建进程规则与 IP 路由表。填写备注和文件名，输入或扫描 EXE，或选择某个目录。两侧列表分别指定接管与直连，直连例外优先。点击「验证」和「保存模式」，再选中并点击「使用选中模式」。重新开启 TUN 后生效。回环选项处理已接入本地 HTTP/SOCKS 代理的 TCP 请求，Windows 原生本机回环不经过 Wintun。
 
+打开「分流规则 → 添加 GEO 示例」可以填入以下三条规则，检查顺序后点击「保存并更新规则」。Slacker 从 MetaCubeX 的 meta-rules-dat 下载规则引用的数据库，更新成功后支持离线重启。
+
+| 示例规则 | 匹配条件 | 动作 |
+| --- | --- | --- |
+| `GEOSITE,cn,DIRECT` | 目标域名属于 geosite.dat 的 cn 分类 | 直连 |
+| `GEOIP,cn,DIRECT` | 目标 IPv4 或 IPv6 地址在 geoip.metadb 中带 cn 标签 | 直连 |
+| `IP-ASN,13335,PROXY` | 目标 IP 在 GeoLite2-ASN.mmdb 中属于 AS13335 | 代理 |
+
+在「资源 → 编辑」中每行填写一条修订。GeoSite 使用 `cn,example.com` 将域名及其子域加入分类，`cn,!example.com` 将其排除。GeoIP 使用 `203.0.113.0/24,cn` 修改地区，ASN 使用 `203.0.113.1,64512` 修改归属。IP 和 CIDR 均支持 IPv4、IPv6，值填 `-` 可移除该范围的数据库归属。更具体的子域或前缀优先，删除修订行即可恢复上游结果。保存后立即应用到新匹配，下次同步保留修订。更改地址后点「同步」下载新来源。
+
+精确域名例外请放在分类规则上方。GeoSite 支持带属性的分类（如 `组名@属性`）。IP 规则只匹配已知的目标地址，域名匹配不会触发额外 DNS 查询。也可把这三个文件的 MetaCubeX 官方 latest 下载链接逐行粘贴到订阅框，单独的数据库链接仅加载数据，流量动作由规则决定。
+
+Windows 去广告和分流规则共用 `%LOCALAPPDATA%\Slacker\rules.db`，按配置文件路径隔离。升级后首次读取有效的旧缓存会迁移到数据库，旧目录保留。Linux 可用 `./slacker rules -c client.json -update -test www.baidu.com` 更新并查询，省略 `-update` 即可离线查询。
+
 智能分流按目标域名或 IP 判断。TUN 收到的普通 IP 数据包按可见 IP 判断。全局代理及串联节点继续通过代理转发，拦截规则仍然有效。
+
+近期版本的已认证节点会先确认收到目标连接请求。原隧道连续 3 秒没有回复时，新请求可以重新握手一次。仅 TLS 模式继续使用原有 TLS 节点和身份校验。双协议节点会优先重试刚才沉默路径的另一种传输。已收到节点回复的慢目标继续沿用目标连接超时。Windows 客户端在首次心跳失败后间隔 2 秒复核，连续三次失败才进入节点恢复流程。
+
+高延迟 TCP 链路采用每流 8 MiB、每会话 32 MiB 的接收缓冲上限，缓冲按流量使用。客户端和服务端分别控制各自接收的方向，两端更新可同时改善上下行。
 
 ## Windows 高级网络设置
 

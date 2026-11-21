@@ -27,6 +27,7 @@ func blockedDNS(wire []byte, router *Router) []byte {
 }
 
 func TestSubscriptionRulesAndDNS(t *testing.T) {
+	isolateRuleCache(t)
 	src, err := adSources([]string{"https://github.com/217heidai/adblockfilters", defaultAdSource})
 	if err != nil || len(src) != 1 || src[0] != defaultAdSource {
 		t.Fatal(src, err)

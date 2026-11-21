@@ -205,16 +205,16 @@ func TestWindowsGUIProcess(t *testing.T) {
 		uc("SendMessageW", h, 0x000d, uintptr(len(b)), uintptr(unsafe.Pointer(&b[0])))
 		return windows.UTF16ToString(b[:])
 	}
-	wait("import did not select the dual node", func() bool { return uc("IsWindowVisible", toggle) != 0 && controlText(toggle) == "启动连接" })
+	wait("import did not select the dual node", func() bool { return uc("IsWindowVisible", toggle) != 0 && controlText(toggle) == "开始加速" })
 	click(navPrefs)
 	click(tlsOnlyAction)
 	policy := uc("GetDlgItem", native, tlsOnlyAction)
 	wait("TLS-only preference was not applied", func() bool { return controlText(policy) == "已开启" })
 	click(navHome)
 	click(toggleAction)
-	wait("native start did not enable the local listener", func() bool { return controlText(toggle) == "断开连接" })
+	wait("native start did not enable the local listener", func() bool { return controlText(toggle) == "停止加速" })
 	click(pingAction)
-	wait("native ping did not reach the authenticated server", func() bool { return users.users[0].txByte.Load() > 0 })
+	wait("native ping did not reach the authenticated server", func() bool { return users.users[0].traffic.totals(trafficMonth(time.Now()))[1] > 0 })
 	if path := os.Getenv("CHRONOMORPH_PREVIEW"); path != "" {
 		time.Sleep(250 * time.Millisecond)
 		if err := captureDesktopWindow(native, path); err != nil {
@@ -287,7 +287,7 @@ func TestWindowsGUIProcess(t *testing.T) {
 	})
 	click(navHome)
 	click(toggleAction)
-	wait("native stop did not release the listener", func() bool { return controlText(toggle) == "启动连接" })
+	wait("native stop did not release the listener", func() bool { return controlText(toggle) == "开始加速" })
 	t.Log("Native dual node import, start, authenticated ping and stop verified")
 	click(navNodes)
 	del := uc("GetDlgItem", native, deleteNode)
@@ -446,6 +446,44 @@ func TestWindowsGUIProcess(t *testing.T) {
 	if got := controlText(notice); !strings.Contains(got, "DIRECT") {
 		t.Fatal("route lookup", got)
 	}
+	click(navResources)
+	for i, resource := range resourceCards {
+		click(editSite + i)
+		// Read foreign-process EDIT controls via WM_GETTEXT.
+		if got := controlText(uc("GetDlgItem", native, resourceURL)); got != geoRelease+resource.name {
+			t.Fatal(resource.name, got)
+		}
+		click(cancelResource)
+	}
+	if path := os.Getenv("SLACKER_RESOURCES_PREVIEW"); path != "" {
+		if err := captureDesktopWindow(native, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	click(editSite)
+	setField(resourceURL, "https://127.0.0.1:1/geo")
+	setField(resourceOverrides, "cn,!sample.example")
+	click(saveResource)
+	wait("resource edits not saved", func() bool {
+		b, e := os.ReadFile(filepath.Join(cmd.Dir, "client.json"))
+		var cfg Config
+		return e == nil && json.Unmarshal(b, &cfg) == nil && cfg.Routing.Resources[geoSiteFile].Overrides == "cn,!sample.example"
+	})
+	click(cancelResource)
+	click(syncSite)
+	wait("failed sync did not show feedback", func() bool { return strings.Contains(controlText(notice), "下载失败") })
+	click(editSite)
+	if got := controlText(uc("GetDlgItem", native, resourceOverrides)); got != "cn,!sample.example" {
+		t.Fatal("lost edits", got)
+	}
+	click(defaultResourceURL)
+	click(saveResource)
+	wait("default resource URL not restored", func() bool {
+		b, e := os.ReadFile(filepath.Join(cmd.Dir, "client.json"))
+		var cfg Config
+		return e == nil && json.Unmarshal(b, &cfg) == nil && cfg.Routing.Resources[geoSiteFile].URL == ""
+	})
+	click(cancelResource)
 	click(navModes)
 	click(modeNew)
 	setField(modeRemark, "游戏")

@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,7 +15,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
-	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -22,9 +23,11 @@ import (
 const appleRouteURL = "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/Apple/Apple_All_No_Resolve.list"
 
 type RouteSettings struct {
-	Manual  string `json:"manual,omitempty"`
-	Sources string `json:"sources,omitempty"`
-	Cache   string `json:"snapshot,omitempty"`
+	Resources map[string]GeoResource `json:"resources,omitempty"`
+	GeoFiles  map[string]string      `json:"geo_files,omitempty"`
+	Manual    string                 `json:"manual,omitempty"`
+	Sources   string                 `json:"sources,omitempty"`
+	Cache     string                 `json:"snapshot,omitempty"`
 }
 type routeHit struct {
 	order        int
@@ -34,11 +37,16 @@ type keywordRoute struct {
 	term string
 	hit  routeHit
 }
+
+var errMissingRouteData = errors.New("缺少分流缓存")
+
 type routeIndex struct {
+	missing        error
 	exact, suffix  map[string]routeHit
 	prefix         map[netip.Prefix]routeHit
 	keywords       []keywordRoute
 	count, skipped int
+	geo            geoRoutes
 }
 
 func newRouteIndex() *routeIndex {
@@ -74,7 +82,7 @@ func (r *routeIndex) parse(text, source, action string, cache *bytes.Buffer) err
 			return errLine("需要规则类型和匹配值")
 		}
 		kind, value := strings.ToUpper(p[0]), strings.ToLower(p[1])
-		if action != "" && (kind == "PROCESS-NAME" || kind == "USER-AGENT" || kind == "URL-REGEX" || kind == "GEOIP" || kind == "IP-ASN" || kind == "DOMAIN-WILDCARD") {
+		if action != "" && (kind == "PROCESS-NAME" || kind == "USER-AGENT" || kind == "URL-REGEX" || kind == "DOMAIN-WILDCARD") {
 			r.skipped++
 			continue
 		}
@@ -112,6 +120,10 @@ func (r *routeIndex) parse(text, source, action string, cache *bytes.Buffer) err
 				return errLine("关键字无效")
 			}
 			r.keywords = append(r.keywords, keywordRoute{value, h})
+		case "GEOSITE", "GEOIP", "IP-ASN":
+			if err := r.geo.add(kind, value, h); err != nil {
+				return errLine(err.Error())
+			}
 		case "IP-CIDR", "IP-CIDR6":
 			n, e := netip.ParsePrefix(value)
 			if e != nil || n.Addr().Is4() != (kind == "IP-CIDR") {
@@ -147,6 +159,7 @@ func (r *routeIndex) match(target string) (hit routeHit) {
 	}
 	if ip, e := netip.ParseAddr(host); e == nil {
 		ip = ip.Unmap()
+		r.geo.matchIP(ip, take)
 		if len(r.prefix) > 0 {
 			for bits := ip.BitLen(); bits >= 0; bits-- {
 				take(r.prefix[netip.PrefixFrom(ip, bits).Masked()])
@@ -164,6 +177,15 @@ func (r *routeIndex) match(target string) (hit routeHit) {
 			take(k.hit)
 		}
 	}
+	for _, site := range r.geo.sites {
+		if hit.order != 0 && site.hit.order >= hit.order {
+			break
+		}
+		if site.matches(host) {
+			take(site.hit)
+			break
+		}
+	}
 	return
 }
 
@@ -171,9 +193,21 @@ type routeFeed struct{ action, url string }
 
 func routeFeeds(text string) ([]routeFeed, error) {
 	var feeds []routeFeed
+	seenGeo := make(map[string]bool)
+	textCount := 0
 	for i, line := range strings.Split(text, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) == 0 {
+			continue
+		}
+		if name, ok := strings.CutPrefix(fields[len(fields)-1], geoRelease); ok && slices.Contains(geoFilenames[:], name) {
+			if len(fields) != 1 {
+				return nil, fmt.Errorf("订阅第 %d 行的 GEO 数据库只需填写链接，动作请写在规则中", i+1)
+			}
+			if !seenGeo[name] {
+				feeds = append(feeds, routeFeed{url: name})
+				seenGeo[name] = true
+			}
 			continue
 		}
 		if len(fields) != 2 || !routeAction(strings.ToUpper(fields[0])) {
@@ -183,35 +217,66 @@ func routeFeeds(text string) ([]routeFeed, error) {
 		if e != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.Fragment != "" {
 			return nil, fmt.Errorf("订阅第 %d 行地址无效", i+1)
 		}
-		if len(feeds) >= 12 {
-			return nil, errors.New("最多 12 个分流订阅")
+		textCount++
+		if textCount > 12 {
+			return nil, errors.New("最多 12 个文本分流订阅")
 		}
 		feeds = append(feeds, routeFeed{strings.ToUpper(fields[0]), u.String()})
 	}
 	return feeds, nil
 }
-func routeSnapshot(path string, raw []byte) (string, error) {
+
+type routeSnapshots []cachedRule
+
+func (w *routeSnapshots) add(raw []byte, suffix string) string {
 	sum := fmt.Sprintf("%x", sha256.Sum256(raw))
-	dir := filepath.Join(filepath.Dir(path), "route-cache")
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return "", err
-	}
-	f, e := os.CreateTemp(dir, ".rules-*")
-	if e != nil {
-		return "", e
-	}
-	defer os.Remove(f.Name())
-	_, e = f.Write(raw)
-	ce := f.Close()
-	if e == nil {
-		e = ce
-	}
-	if e == nil {
-		e = os.Rename(f.Name(), filepath.Join(dir, sum+".txt"))
-	}
-	return sum, e
+	*w = append(*w, cachedRule{key: sum + suffix, data: raw, modified: time.Now()})
+	return sum
 }
 func buildRouting(ctx context.Context, path string, s RouteSettings, refresh bool, client *http.Client) (*routeIndex, string, error) {
+	return buildResourceRouting(ctx, path, s, refresh, nil, client)
+}
+
+func buildResourceRouting(ctx context.Context, path string, s RouteSettings, refresh bool, selected []string, client *http.Client) (*routeIndex, string, error) {
+	var pending routeSnapshots
+	r, hash, err := buildRuleIndex(ctx, path, s, refresh && selected == nil, client, &pending)
+	if err != nil {
+		if selected == nil || !errors.Is(err, errMissingRouteData) && !errors.Is(err, os.ErrNotExist) {
+			return nil, "", err
+		}
+		// A missing text subscription must not prevent an independent resource download.
+		r = newRouteIndex()
+		r.missing = err
+		hash = s.Cache
+		if err = r.add(s.Manual, "本地规则", ""); err != nil {
+			return nil, "", err
+		}
+	}
+	for _, name := range selected {
+		r.geo.require(name)
+	}
+	for _, name := range geoFilenames {
+		res := s.Resources[name]
+		if _, err = res.source(name); err != nil {
+			return nil, "", err
+		}
+		if err = r.geo.overrides.parse(name, res.Overrides); err != nil {
+			return nil, "", err
+		}
+	}
+	if err = r.geo.load(ctx, path, s, refresh, selected, client, &pending); err != nil {
+		return nil, "", err
+	}
+	if r.geo.missing != nil {
+		r.missing = r.geo.missing
+	}
+	if err = writeRuleCache(path, routingCache, pending); err != nil {
+		return nil, "", err
+	}
+	return r, hash, nil
+}
+
+func buildRuleIndex(ctx context.Context, path string, s RouteSettings, refresh bool, client *http.Client, pending *routeSnapshots) (*routeIndex, string, error) {
 	r := newRouteIndex()
 	if e := r.add(s.Manual, "本地规则", ""); e != nil {
 		return nil, "", e
@@ -220,24 +285,37 @@ func buildRouting(ctx context.Context, path string, s RouteSettings, refresh boo
 	if e != nil {
 		return nil, "", e
 	}
+	textFeeds := feeds[:0]
+	for _, f := range feeds {
+		if f.action == "" {
+			r.geo.require(f.url)
+		} else {
+			textFeeds = append(textFeeds, f)
+		}
+	}
+	feeds = textFeeds
 	if len(feeds) == 0 {
 		return r, "", nil
 	}
 	if !refresh {
 		b, e := hex.DecodeString(s.Cache)
 		if e != nil || len(b) != 32 {
-			return nil, "", errors.New("缺少分流订阅缓存，请更新规则")
+			return nil, "", fmt.Errorf("%w，请更新文本订阅", errMissingRouteData)
 		}
-		file, e := os.Open(filepath.Join(filepath.Dir(path), "route-cache", s.Cache+".txt"))
+		item, e := readRuleCache(path, routingCache, s.Cache+".txt", 16<<20)
 		if e != nil {
 			return nil, "", e
 		}
-		defer file.Close()
-		raw, e := io.ReadAll(io.LimitReader(file, (16<<20)+1))
-		if e != nil || len(raw) > 16<<20 || fmt.Sprintf("%x", sha256.Sum256(raw)) != s.Cache {
+		if fmt.Sprintf("%x", sha256.Sum256(item.data)) != s.Cache {
 			return nil, "", errors.New("分流订阅缓存校验失败")
 		}
-		return r, s.Cache, r.add(string(raw), "缓存", "")
+		if e = r.add(string(item.data), "缓存", ""); e != nil {
+			return nil, "", e
+		}
+		if item.legacy {
+			*pending = append(*pending, item)
+		}
+		return r, s.Cache, nil
 	}
 	var merged bytes.Buffer
 	for i, f := range feeds {
@@ -266,14 +344,67 @@ func buildRouting(ctx context.Context, path string, s RouteSettings, refresh boo
 			return nil, "", errors.New("分流订阅总大小超过限制")
 		}
 	}
-	hash, e := routeSnapshot(path, merged.Bytes())
-	return r, hash, e
+	return r, pending.add(merged.Bytes(), ".txt"), nil
 }
 func routeHTTPClient() *http.Client {
-	return &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+	return &http.Client{Timeout: 90 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if req.URL.Scheme != "https" || len(via) > 8 {
 			return errors.New("无效重定向")
 		}
 		return nil
 	}}
+}
+
+// The CLI and desktop editor publish the snapshot only after every requested
+// rule source has been downloaded, decoded and written successfully.
+func routingCommand(path string, update bool, target string) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var doc map[string]json.RawMessage
+	if err = json.Unmarshal(raw, &doc); err != nil {
+		return err
+	}
+	if doc == nil {
+		return errors.New("配置需要 JSON 对象")
+	}
+	var s RouteSettings
+	if v := doc["routing"]; v != nil {
+		if err = json.Unmarshal(v, &s); err != nil {
+			return err
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	idx, hash, err := buildRouting(ctx, path, s, update, routeHTTPClient())
+	if err != nil {
+		return err
+	}
+	if update {
+		s = s.withIndex(idx, hash)
+		if doc["routing"], err = json.Marshal(s); err != nil {
+			return err
+		}
+		current, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(current, raw) {
+			return errors.New("更新期间配置已改变，请重试")
+		}
+		if err = saveJSONAtomic(path, doc); err != nil {
+			return err
+		}
+	}
+	fmt.Printf("%d 条分流规则，%d 个 GEO 数据库就绪\n", idx.count, len(idx.geo.files))
+	if target != "" {
+		h := idx.match(target)
+		if h.order > 0 {
+			fmt.Printf("%s  %s\n", h.action, h.rule)
+		} else {
+			fmt.Println("未命中分流规则")
+		}
+	}
+	return nil
 }

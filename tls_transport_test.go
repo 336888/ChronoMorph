@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestTLSOnlyTransport(t *testing.T) {
@@ -46,7 +47,7 @@ func TestTLSOnlyTransport(t *testing.T) {
 	if client.tcpPath.profile != tlsProfileReady || smuxTransportConfig(client.tcpPath).Version != 2 {
 		t.Fatal("new peers did not select multiplexing v2 after TLS authentication")
 	}
-	if got := users.users[0]; got.rxByte.Load() == 0 || got.txByte.Load() == 0 {
+	if got := users.users[0].traffic.totals(trafficMonth(time.Now())); got[0] == 0 || got[1] == 0 {
 		t.Fatal("missing traffic counts")
 	}
 	for _, tc := range []struct{ name, master, pin string }{

@@ -34,12 +34,12 @@ func TestReloadPreservesLiveUser(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := engine.users[0]
-	before.rxByte.Store(50)
+	before.traffic.add(50, 0)
 	before.replay.CheckAndUpdate(7, 210000, 12)
 	if err = engine.ReplaceUsers(cfg.serverUsers()); err != nil {
 		t.Fatal(err)
 	}
-	if engine.users[0] != before || before.rxByte.Load() != 50 || before.replay.CheckAndUpdate(7, 210000, 12) {
+	if engine.users[0] != before || before.traffic.totals(trafficMonth(time.Now()))[0] != 50 || before.replay.CheckAndUpdate(7, 210000, 12) {
 		t.Fatal("live state lost on reload")
 	}
 	if err = engine.ReplaceUsers([]UserEntry{{KeyHex: "invalid"}}); err == nil || before.retired.Load() {

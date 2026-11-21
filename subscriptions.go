@@ -11,8 +11,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -185,14 +183,16 @@ func loadAdRules(ctx context.Context, config string, sources []string, force boo
 		return nil
 	}}
 	stale := false
+	var writes []cachedRule
 	for i, src := range sources {
-		path := filepath.Join(filepath.Dir(config), "adblock-cache", fmt.Sprintf("%x.txt", sha256.Sum256([]byte(src))))
-		info, err := os.Stat(path)
-		validCache := err == nil && info.Mode().IsRegular() && info.Size() <= maxAdBytes
-		if !force && validCache {
-			data, e := os.ReadFile(path)
-			if e == nil && parseAdSource(data, r, uint8(i+1)) == nil {
-				stale = stale || time.Since(info.ModTime()) > adRefreshInterval
+		key := fmt.Sprintf("%x.txt", sha256.Sum256([]byte(src)))
+		if !force {
+			cached, e := readRuleCache(config, adCache, key, maxAdBytes)
+			if e == nil && parseAdSource(cached.data, r, uint8(i+1)) == nil {
+				stale = stale || time.Since(cached.modified) > adRefreshInterval
+				if cached.legacy {
+					writes = append(writes, cached)
+				}
 				continue
 			}
 		}
@@ -212,25 +212,10 @@ func loadAdRules(ctx context.Context, config string, sources []string, force boo
 		if err = parseAdSource(data, r, uint8(i+1)); err != nil {
 			return nil, false, fmt.Errorf("订阅 %d: %w", i+1, err)
 		}
-		if err = os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-			return nil, false, err
-		}
-		f, err := os.CreateTemp(filepath.Dir(path), ".rules-*")
-		if err != nil {
-			return nil, false, err
-		}
-		_, err = f.Write(data)
-		ce := f.Close()
-		if err == nil {
-			err = ce
-		}
-		if err == nil {
-			err = os.Rename(f.Name(), path)
-		}
-		_ = os.Remove(f.Name())
-		if err != nil {
-			return nil, false, err
-		}
+		writes = append(writes, cachedRule{key: key, data: data, modified: time.Now()})
+	}
+	if err := writeRuleCache(config, adCache, writes); err != nil {
+		return nil, false, err
 	}
 	return r, stale, nil
 }

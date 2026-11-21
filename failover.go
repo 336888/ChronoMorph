@@ -41,16 +41,19 @@ func (g *GUIController) StartAutoFailover(stopCh <-chan struct{}) {
 				}
 				consecutiveFails++
 				log.Printf("[Failover] 当前节点探活失败 (%d/3)", consecutiveFails)
-				if consecutiveFails >= 3 {
-					if cm.entry != nil {
-						cm.entry.Reset()
-					}
-					cm.Reset()
-					if !nodeReachable(cm) && len(cfg.Profiles) > 1 {
-						g.tryStandby(stopCh, cm, cfg)
-					}
-					consecutiveFails = 0
+				if consecutiveFails < 3 {
+					// Confirm a failure promptly even when healthy heartbeats are infrequent.
+					ticker.Reset(2 * time.Second)
+					continue
 				}
+				if cm.entry != nil {
+					cm.entry.Reset()
+				}
+				cm.Reset()
+				if !nodeReachable(cm) && len(cfg.Profiles) > 1 {
+					g.tryStandby(stopCh, cm, cfg)
+				}
+				consecutiveFails = 0
 			}
 		}
 	}()

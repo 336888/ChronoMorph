@@ -258,7 +258,7 @@ func (c *tlsMeterConn) Read(p []byte) (int, error) {
 			return 0, net.ErrClosed
 		}
 		if c.user != nil {
-			c.user.rxByte.Add(uint64(n))
+			c.user.traffic.add(uint64(n), 0)
 		} else {
 			LiveStats.AddRx(uint64(n))
 		}
@@ -272,7 +272,7 @@ func (c *tlsMeterConn) Write(p []byte) (int, error) {
 	n, err := c.Conn.Write(p)
 	if n > 0 {
 		if c.user != nil {
-			c.user.txByte.Add(uint64(n))
+			c.user.traffic.add(0, uint64(n))
 		} else {
 			LiveStats.AddTx(uint64(n))
 		}

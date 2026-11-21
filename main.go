@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -70,11 +71,20 @@ func main() {
 			RunWindowsGUI("client.json")
 			return
 		}
-		fmt.Println("用法: slacker <server | client | keygen | version> [-c config.json]")
+		fmt.Println("用法: slacker <server | client | rules | keygen | version> [-c config.json]")
 		os.Exit(1)
 	}
 
 	switch os.Args[1] {
+	case "rules":
+		fs := flag.NewFlagSet("rules", flag.ExitOnError)
+		path := fs.String("c", "client.json", "客户端配置")
+		update := fs.Bool("update", false, "更新分流规则和数据库")
+		target := fs.String("test", "", "测试域名或 IP")
+		_ = fs.Parse(os.Args[2:])
+		if err := routingCommand(*path, *update, *target); err != nil {
+			log.Fatal(err)
+		}
 	case "licenses":
 		if err := printLicenses(os.Stdout); err != nil {
 			log.Fatal(err)
@@ -297,7 +307,7 @@ func handleServerSession(conn net.Conn) {
 	}
 }
 
-func handleServerStream(stream *smux.Stream) {
+func handleServerStream(stream net.Conn) {
 	if !serverLimiter.Acquire() {
 		_ = stream.Close()
 		return
@@ -305,46 +315,43 @@ func handleServerStream(stream *smux.Stream) {
 	defer serverLimiter.Release()
 	defer stream.Close()
 
-	var cmd [1]byte
-	if _, err := io.ReadFull(stream, cmd[:]); err != nil {
+	cmd, target, err := readServerRequest(stream, 10*time.Second)
+	if err != nil {
+		var timeout net.Error
+		if errors.As(err, &timeout) && timeout.Timeout() {
+			serverLimiter.headerTimeouts.Add(1)
+		}
 		return
 	}
-	if cmd[0] == CmdCapabilities {
+	switch cmd {
+	case CmdCapabilities:
+		stream.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		_, _ = stream.Write([]byte{CmdCapabilities, capDialAck | capDialProgress})
 		return
-	}
-	if cmd[0] == cmdQualityDownload {
+	case cmdQualityDownload:
 		serveQualityBlock(stream)
 		return
-	}
-	if cmd[0] == CmdPing {
+	case CmdPing:
+		stream.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		_, _ = stream.Write([]byte{CmdPing})
 		return
-	}
-	if cmd[0] == CmdUDP {
+	case CmdUDP:
 		handleServerUDPStream(stream)
 		return
-	}
-	ack := cmd[0] == CmdDialTCP || cmd[0] == CmdDialReady
-	if cmd[0] != CmdTCP && !ack {
+	case CmdTCP, CmdDialTCP, CmdDialReady:
+	default:
 		return
 	}
-
-	var lenBuf [1]byte
-	if _, err := io.ReadFull(stream, lenBuf[:]); err != nil {
-		return
+	ack := cmd != CmdTCP
+	if ack {
+		stream.SetWriteDeadline(time.Now().Add(15 * time.Second))
 	}
-	addrBuf := make([]byte, lenBuf[0])
-	if _, err := io.ReadFull(stream, addrBuf); err != nil {
-		return
-	}
-
-	if cmd[0] == CmdDialReady {
+	if cmd == CmdDialReady {
 		if _, err := stream.Write([]byte{CmdDialReady}); err != nil {
 			return
 		}
 	}
-	targetConn, err := net.DialTimeout("tcp", string(addrBuf), 8*time.Second)
+	targetConn, err := net.DialTimeout("tcp", target, 8*time.Second)
 	if err != nil {
 		if ack {
 			_, _ = stream.Write([]byte{1})
@@ -356,9 +363,33 @@ func handleServerStream(stream *smux.Stream) {
 		if _, err := stream.Write([]byte{0}); err != nil {
 			return
 		}
+		stream.SetWriteDeadline(time.Time{})
 	}
 
-	pipeBidirectional(stream, targetConn)
+	if relayBidirectional(stream, targetConn, 2*time.Minute) {
+		serverLimiter.drainTimeouts.Add(1)
+	}
+}
+
+// One deadline covers the entire header, including a partially sent target.
+func readServerRequest(conn net.Conn, timeout time.Duration) (byte, string, error) {
+	conn.SetReadDeadline(time.Now().Add(timeout))
+	defer conn.SetReadDeadline(time.Time{})
+	var cmd, size [1]byte
+	if _, err := io.ReadFull(conn, cmd[:]); err != nil {
+		return 0, "", err
+	}
+	switch cmd[0] {
+	case CmdTCP, CmdDialTCP, CmdDialReady:
+		if _, err := io.ReadFull(conn, size[:]); err != nil {
+			return 0, "", err
+		}
+		addr := make([]byte, size[0])
+		_, err := io.ReadFull(conn, addr)
+		return cmd[0], string(addr), err
+	default:
+		return cmd[0], "", nil
+	}
 }
 
 type ClientMux struct {
@@ -382,6 +413,7 @@ type ClientMux struct {
 	udpPath         *RTPPacketConn
 	tcpPath         *tlsMeterConn
 	preferUDP       bool
+	retryFirst      int32 // one-shot preference after authenticated traffic stops on a dual node
 	activeTransport atomic.Int32
 	dialMode        byte
 	retryAfter      time.Time
@@ -474,8 +506,13 @@ func (cm *ClientMux) ensureSessionLocked() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	cm.dialDone, cm.cancelDial = done, cancel
+	firstTCP := !cm.preferUDP
+	if cm.retryFirst != 0 {
+		firstTCP = cm.retryFirst == transportTCP
+		cm.retryFirst = 0
+	}
 	cm.mu.Unlock()
-	path, err := cm.connectTransport(ctx)
+	path, err := cm.connectTransport(ctx, firstTCP)
 	cancel()
 	cm.mu.Lock()
 	if cm.dialDone != done {
@@ -489,9 +526,9 @@ func (cm *ClientMux) ensureSessionLocked() error {
 		return err
 	}
 	cm.sess, cm.udpPath, cm.tcpPath, cm.dialMode = path.session, path.udp, path.tcp, path.mode
-	transport := int32(1)
+	transport := int32(transportUDP)
 	if path.tcp != nil {
-		transport = 2
+		transport = transportTCP
 	}
 	cm.activeTransport.Store(transport)
 	cm.lastDialErr, cm.retryAfter = nil, time.Time{}
@@ -507,7 +544,7 @@ func (cm *ClientMux) cacheDialErrorLocked(err error) {
 func (cm *ClientMux) discardSilentPath(session *smux.Session, since time.Time) bool {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
-	if session == nil || (cm.tlsConfig != nil && cm.tlsNode.UDPPort == 0) || cm.closed {
+	if session == nil || cm.closed {
 		return false
 	}
 	if cm.sess != session {
@@ -516,11 +553,24 @@ func (cm *ClientMux) discardSilentPath(session *smux.Session, since time.Time) b
 	var last *atomic.Int64
 	if cm.udpPath != nil {
 		last = &cm.udpPath.lastReply
-	} else if cm.tcpPath != nil {
+	} else if cm.tcpPath != nil && (cm.tlsNode.UDPPort != 0 || cm.tcpPath.profile == tlsProfileReady) {
 		last = &cm.tcpPath.lastReply
 	}
-	if last == nil || last.Load() >= since.UnixNano() {
+	if last == nil {
 		return false
+	}
+	// A TLS session can receive keepalive or flow-control frames after a
+	// request starts without ever acknowledging that request. When the only
+	// request stream has timed out, permit reconnect even if those frames
+	// advanced lastReply. Do not disrupt other active streams.
+	if last.Load() >= since.UnixNano() && !(cm.tcpPath != nil && cm.tlsNode.UDPPort == 0 && session.NumStreams() == 0) {
+		return false
+	}
+	if cm.tlsNode.UDPPort != 0 {
+		cm.retryFirst = transportTCP
+		if cm.tcpPath != nil {
+			cm.retryFirst = transportUDP
+		}
 	}
 	cm.closeLocked()
 	return true
@@ -611,6 +661,7 @@ func (cm *ClientMux) Close() {
 
 func (cm *ClientMux) resetLocked() {
 	cm.generation++
+	cm.retryFirst = 0
 	if cm.dialDone != nil {
 		cm.cancelDial()
 		close(cm.dialDone)
@@ -655,7 +706,9 @@ func runHeadlessClient(cfgPath string) {
 	cm.startClockSync()
 
 	router := cfg.newRouter()
-	router.restoreRoutes(cfgPath, cfg.Routing)
+	if err := router.restoreRoutes(cfgPath, cfg.Routing); err != nil {
+		log.Fatalf("[分流规则] %v", err)
+	}
 	if len(cfg.AdSubscriptions) > 0 {
 		sources, e := adSources(cfg.AdSubscriptions)
 		if e != nil {
@@ -705,10 +758,10 @@ func smuxTransportConfig(conn net.Conn) *smux.Config {
 	cfg := smuxConfig()
 	if c, ok := conn.(*tlsMeterConn); ok && c.profile != tlsProfileV1 {
 		cfg.Version = 2
-		// A 200 ms path at 100 Mbit/s needs about 2.5 MB in flight.
-		// Retain room for other streams when a single receiver pauses.
-		cfg.MaxStreamBuffer = 4 << 20
-		cfg.MaxReceiveBuffer = 16 << 20
+		// smux sends credit after half the stream window is consumed.
+		// Leave a full 200 ms, 100 Mbit/s flight in the remaining half.
+		cfg.MaxStreamBuffer = 8 << 20
+		cfg.MaxReceiveBuffer = 32 << 20
 	}
 	return cfg
 }
@@ -721,21 +774,77 @@ func closeWrite(dst io.Closer) error {
 }
 
 func pipeBidirectional(a, b io.ReadWriteCloser) {
-	var stop sync.Once
-	abort := func() { stop.Do(func() { _ = a.Close(); _ = b.Close() }) }
-	var wg sync.WaitGroup
-	wg.Add(2)
+	relayBidirectional(a, b, 0)
+}
+
+type relayProgressWriter struct {
+	io.Writer
+	start time.Time
+	last  *atomic.Int64
+}
+
+func (w relayProgressWriter) Write(p []byte) (int, error) {
+	n, err := w.Writer.Write(p)
+	if n > 0 && w.last.Load() >= 0 {
+		w.last.Store(int64(time.Since(w.start)))
+	}
+	return n, err
+}
+
+// After one clean EOF, let the reverse direction finish while it makes
+// progress. A zero drainIdle retains the unrestricted client-side behavior.
+func relayBidirectional(a, b io.ReadWriteCloser, drainIdle time.Duration) bool {
+	start := time.Now()
+	var last atomic.Int64
+	last.Store(-1)
+	done := make(chan error, 2)
 	copyTo := func(dst, src io.ReadWriteCloser) {
-		defer wg.Done()
-		if _, err := io.Copy(dst, src); err != nil {
-			abort()
-			return
+		var w io.Writer = dst
+		if drainIdle > 0 {
+			w = relayProgressWriter{dst, start, &last}
 		}
-		if err := closeWrite(dst); err != nil {
-			abort()
+		_, err := io.Copy(w, src)
+		if err == nil {
+			err = closeWrite(dst)
 		}
+		done <- err
 	}
 	go copyTo(a, b)
 	go copyTo(b, a)
-	wg.Wait()
+	closeBoth := func() {
+		_ = a.Close()
+		_ = b.Close()
+	}
+	if err := <-done; err != nil {
+		closeBoth()
+		<-done
+		return false
+	}
+
+	var timer *time.Timer
+	var deadline <-chan time.Time
+	if drainIdle > 0 {
+		last.Store(int64(time.Since(start)))
+		timer = time.NewTimer(drainIdle)
+		defer timer.Stop()
+		deadline = timer.C
+	}
+	for {
+		select {
+		case err := <-done:
+			if err != nil {
+				closeBoth()
+			}
+			return false
+		case <-deadline:
+			remaining := drainIdle - (time.Since(start) - time.Duration(last.Load()))
+			if remaining > 0 {
+				timer.Reset(remaining)
+				continue
+			}
+			closeBoth()
+			<-done
+			return true
+		}
+	}
 }

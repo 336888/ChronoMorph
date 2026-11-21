@@ -3,11 +3,17 @@ package main
 import "golang.org/x/sys/windows"
 
 var englishLabels = map[string]string{
+	"加速器": "Accelerator", "资源": "Resources", "分流数据库": "Routing databases", "编辑资源": "Edit resource", "同步全部": "Sync all", "同步": "Sync", "编辑": "Edit", "已缓存": "Cached", "未同步": "Not synced", "上次同步": "Last sync", "新地址待同步": "Source changed",
+	"域名分类": "Domain groups", "IP 地区": "IP regions", "自治系统": "IP ownership", "同步地址": "Download URL", "本地修订": "Local overrides", "返回资源": "Back", "保存编辑": "Save edits", "恢复默认地址": "Default URL", "编辑已保存": "Edits saved", "正在同步": "Syncing", "已同步 %d 个资源": "Synced %d resources",
+	"开始加速": "Connect", "停止加速": "Disconnect", "添加节点": "Add node", "选择线路": "Select node", "待机": "Standby", "尚未选择线路": "No node selected",
+	"分类,域名  ·  cn,example.com 加入，cn,!example.com 排除":           "group,domain  ·  cn,example.com adds; cn,!example.com excludes",
+	"IP 或 CIDR,标签  ·  203.0.113.0/24,cn  或  203.0.113.1,-":     "IP or CIDR,label  ·  203.0.113.0/24,cn  or  203.0.113.1,-",
+	"IP 或 CIDR,ASN  ·  203.0.113.0/24,13335  或  203.0.113.1,-": "IP or CIDR,ASN  ·  203.0.113.0/24,13335  or  203.0.113.1,-",
 	"保存本地规则": "Save local rules",
 	"分流规则":   "Routing rules", "编辑模式": "Edit mode", "协议选项": "Protocols", "选择目录": "Choose folder", "扫描 EXE": "Scan EXEs", "处理本地回环": "Loopback", "处理局域网": "Local network", "返回规则编辑": "Back to rules",
 	"新建进程模式": "New process mode", "新建 IP 路由表": "New IP route table", "使用选中模式": "Use selected", "删除模式": "Delete mode", "保存模式": "Save mode", "验证": "Validate", "使用常规网络设置": "Use default network settings",
-	"添加 Apple 直连订阅": "Add Apple direct rules", "保存并更新规则": "Save and update", "测试规则匹配": "Test match", "本地规则 · 类型,匹配值,DIRECT / PROXY / REJECT": "Local rules · type, value, DIRECT / PROXY / REJECT",
-	"订阅 · 每行填写动作、空格和 HTTPS 规则直链": "Subscriptions · one action and HTTPS URL per line", "备注": "Name", "文件名": "File name", "处理规则 · 代理": "Include · proxy", "分流规则 · 直连优先": "Exclude · direct first", "创建模式": "Create a mode", "选择已保存的模式": "Select a saved mode",
+	"添加 GEO 示例": "Add GEO example", "添加 Apple 直连订阅": "Add Apple direct rules", "保存并更新规则": "Save and update", "测试规则匹配": "Test match", "本地规则 · 类型,匹配值,DIRECT / PROXY / REJECT": "Local rules · type, value, DIRECT / PROXY / REJECT",
+	"订阅 · 每行填写动作和规则直链，GEO 数据库直接粘贴链接": "Feeds · action and URL, or paste a GEO database URL", "备注": "Name", "文件名": "File name", "处理规则 · 代理": "Include · proxy", "分流规则 · 直连优先": "Exclude · direct first", "创建模式": "Create a mode", "选择已保存的模式": "Select a saved mode",
 	"进程接管选项": "Protocols and scope", "DNS 上游 · IP:端口": "DNS upstream · IP:port", "ICMP 延迟（毫秒）": "ICMP delay (ms)", "回环选项适用于经本地代理的 TCP。原生回环连接由 Windows 处理。": "Loopback applies to TCP via the local proxy. Windows handles native loopback.",
 	"进程模式匹配程序。路由表匹配目标 IP 或 CIDR。":  "Process modes match apps. Route tables match destination IP ranges.",
 	"每行一个 EXE 名、完整路径、目录或 re: 表达式。": "One EXE, full path, folder or re: expression per line.", "每行一个 IPv4、IPv6 或 CIDR。": "One IPv4, IPv6 or CIDR per line.",

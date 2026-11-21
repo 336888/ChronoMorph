@@ -17,18 +17,19 @@ import (
 )
 
 type GUIController struct {
-	rulesMu    sync.Mutex
-	mu         sync.Mutex
-	cfgPath    string
-	cfg        *Config
-	cm         *ClientMux
-	probes     map[*ClientMux]struct{}
-	ln         net.Listener
-	clients    map[net.Conn]struct{}
-	router     *Router
-	running    bool
-	sysProxyOn bool
-	pacErr     error
+	routeLoadErr error
+	rulesMu      sync.Mutex
+	mu           sync.Mutex
+	cfgPath      string
+	cfg          *Config
+	cm           *ClientMux
+	probes       map[*ClientMux]struct{}
+	ln           net.Listener
+	clients      map[net.Conn]struct{}
+	router       *Router
+	running      bool
+	sysProxyOn   bool
+	pacErr       error
 }
 
 func (g *GUIController) StartTunnel() error {
@@ -40,6 +41,9 @@ func (g *GUIController) StartTunnel() error {
 func (g *GUIController) startTunnelLocked(cfg *Config, save bool) error {
 	if g.running {
 		return nil
+	}
+	if g.routeLoadErr != nil {
+		return fmt.Errorf("请先保存并更新分流规则: %w", g.routeLoadErr)
 	}
 	cm, err := cfg.nodeMux(cfg.ServerIP, cfg.MasterKey, cfg.TLSNode)
 	if err != nil {
@@ -208,7 +212,7 @@ func RunWindowsGUI(cfgPath string) {
 		router:  cfg.newRouter(),
 	}
 
-	ctrl.router.restoreRoutes(cfgPath, cfg.Routing)
+	ctrl.routeLoadErr = ctrl.router.restoreRoutes(cfgPath, cfg.Routing)
 	ctrl.router.live = &flowMonitor{}
 	stopCh := make(chan struct{})
 	ctrl.startSubscriptions(stopCh)

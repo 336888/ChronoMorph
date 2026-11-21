@@ -14,15 +14,16 @@ import (
 )
 
 const (
-	bg       = 0xf4f4f8
-	side     = 0xf9f9fb
-	panel    = 0xffffff
-	edge     = 0xdadce3
-	fg       = 0x1c1c1e
-	muted    = 0x585960
-	mint     = 0x0065d9
-	blue     = 0x0065d9
-	editorBG = 0xffffff
+	bg       = 0x10151e
+	side     = 0x101922
+	panel    = 0x19232f
+	edge     = 0x2d3b4a
+	fg       = 0xeef4f9
+	muted    = 0xa5b6c6
+	mint     = 0x56e4b3
+	blue     = 0x82caff
+	editorBG = 0x111c27
+	hero     = 0x192c38
 )
 const (
 	homePage = iota + 1
@@ -86,6 +87,7 @@ const (
 	lockEntryAction
 	block6Action
 	recheckAction
+	chooseLine
 )
 const (
 	nodesList = 200 + iota
@@ -125,6 +127,9 @@ type desktopResult struct {
 	measuredClient     *ClientMux
 }
 type desktopUI struct {
+	history                                           speedHistory
+	resourceState                                     RouteSettings
+	resourceEdit                                      int
 	editor                                            modeEditor
 	language                                          string
 	checked                                           map[int]bool
@@ -195,16 +200,18 @@ func (u *desktopUI) setupControls() {
 	uc("SendMessageW", n, 0x30, u.font(13, 400), 1)
 	u.controls[noticeControl] = &nativeControl{n, 0, ""}
 	for i, item := range navigation {
-		u.button(item.id, 0, 12, 98+i*42, 160, 37, item.label)
+		u.button(item.id, 0, 12, 93+i*38, 160, 34, item.label)
 	}
 	u.setupNetworkControls()
 	u.setupRuleControls()
+	u.setupResourceControls()
 	u.setupLiveControls()
 	u.button(importAction, 0, 704, 27, 113, 37, "导入节点")
-	u.button(toggleAction, homePage, 650, 130, 139, 43, "启动连接")
-	u.button(pingAction, homePage, 721, 239, 69, 29, "测速")
-	u.button(proxyAction, homePage, 686, 356, 102, 37, "开启")
-	u.button(modeAction, homePage, 669, 430, 119, 37, "智能分流")
+	u.button(chooseLine, homePage, 235, 213, 113, 29, "选择线路")
+	u.button(toggleAction, homePage, 640, 97, 151, 148, "开始加速")
+	u.button(pingAction, homePage, 336, 279, 56, 24, "测速")
+	u.button(proxyAction, homePage, 682, 396, 115, 34, "开启")
+	u.button(modeAction, homePage, 669, 443, 128, 33, "智能分流")
 	u.input(nodesList, nodesPage, 223, 134, 568, 188, "LISTBOX", 0x200001|0x100) // notify, scroll, no integral height
 	u.button(useNode, nodesPage, 223, 346, 134, 39, "使用选中节点")
 	u.button(bestNode, nodesPage, 370, 346, 111, 39, "测速优选")
@@ -276,6 +283,18 @@ func (u *desktopUI) setPage(page int) {
 		uc("ShowWindow", c.h, cmd)
 	}
 	switch page {
+	case resourceEditorPage:
+		g := u.ctrl
+		g.mu.Lock()
+		name := resourceCards[u.resourceEdit].name
+		res := g.cfg.Routing.Resources[name]
+		g.mu.Unlock()
+		address := res.URL
+		if address == "" {
+			address = geoRelease + name
+		}
+		u.setField(resourceURL, address)
+		u.setField(resourceOverrides, res.Overrides)
 	case modesPage:
 		u.loadModes("")
 	case routesPage:
@@ -354,6 +373,9 @@ func (u *desktopUI) refresh() {
 	if !g.mu.TryLock() {
 		return
 	}
+	if u.page == resourcesPage {
+		u.resourceState = g.cfg.Routing
+	}
 	if u.page == adsPage {
 		u.adPaused = g.cfg.AdPaused
 		r := g.router.ads.Load()
@@ -386,6 +408,7 @@ func (u *desktopUI) refresh() {
 		u.nodeName = u.profiles[u.active].Name
 	}
 	if u.current != g.cm {
+		u.history = speedHistory{}
 		u.rtt = -1
 		u.current = g.cm
 	}
@@ -403,15 +426,18 @@ func (u *desktopUI) refresh() {
 		u.command(pingAction)
 	}
 	u.tx, u.rx = LiveStats.txSpeedBps.Load(), LiveStats.rxSpeedBps.Load()
+	if u.running {
+		u.history.record(time.Now(), u.rx, u.tx)
+	}
 	if u.page == prefsPage {
 		u.auto = IsAutoStartEnabled()
 		u.tun = GlobalTUN.IsActive()
 	}
-	btn := "启动连接"
+	btn := "开始加速"
 	if u.running {
-		btn = "断开连接"
+		btn = "停止加速"
 	} else if u.ip == "" {
-		btn = "添加第一个节点"
+		btn = "添加节点"
 	}
 	u.label(toggleAction, btn)
 	u.label(proxyAction, onLabel(u.proxy))
@@ -582,7 +608,7 @@ func (u *desktopUI) command(id int) {
 			return
 		}
 	}
-	if u.ruleCommand(id) || u.networkCommand(id) {
+	if u.resourceCommand(id) || u.ruleCommand(id) || u.networkCommand(id) {
 		return
 	}
 	switch id {
@@ -650,6 +676,8 @@ func (u *desktopUI) command(id int) {
 			}
 			return desktopResult{originPage: benchPage, benchText: strings.Join(lines, "\r\n"), message: "延迟测试完成"}
 		})
+	case chooseLine:
+		u.setPage(nodesPage)
 	case openDomainTools:
 		u.setPage(domainPage)
 	case addAdSource:

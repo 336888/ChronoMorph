@@ -80,16 +80,24 @@ func (cfg *Config) newRouter() *Router {
 	r.setAdPreferences(cfg.AdAllowDomains, cfg.AdPaused)
 	return r
 }
-func (r *Router) restoreRoutes(path string, s RouteSettings) {
+func (r *Router) restoreRoutes(path string, s RouteSettings) error {
 	idx, _, err := buildRouting(context.Background(), path, s, false, nil)
 	if err != nil {
 		log.Printf("[分流规则] %v", err)
+		if r.routes.Load() != nil {
+			return nil
+		}
 		idx = newRouteIndex()
-		if idx.add(s.Manual, "本地规则", "") != nil {
-			return
+		manualErr := idx.add(s.Manual, "本地规则", "")
+		if len(idx.geo.files) > 0 || len(s.GeoFiles) > 0 {
+			return err
+		}
+		if manualErr != nil {
+			return nil
 		}
 	}
 	r.routes.Store(idx)
+	return nil
 }
 func (r *Router) setAdPreferences(domains []string, paused bool) {
 	allowed := make(map[string]bool, len(domains))

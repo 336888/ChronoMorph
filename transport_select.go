@@ -10,6 +10,11 @@ import (
 	"github.com/xtaci/smux"
 )
 
+const (
+	transportUDP = 1
+	transportTCP = 2
+)
+
 type tunnelPath struct {
 	session *smux.Session
 	udp     *RTPPacketConn
@@ -52,7 +57,7 @@ func (cm *ClientMux) dialPath(ctx context.Context, tcp bool) (tunnelPath, error)
 	stop := context.AfterFunc(ctx, p.close)
 	defer stop()
 	p.mode = CmdDialTCP
-	if tcp && cm.tlsNode.UDPPort != 0 && p.tcp.profile == tlsProfileReady {
+	if tcp && p.tcp.profile == tlsProfileReady {
 		p.mode = CmdDialReady
 	} else if !tcp || cm.tlsNode.UDPPort != 0 {
 		mode, err := negotiateDialMode(p.session)
@@ -70,7 +75,7 @@ func (cm *ClientMux) dialPath(ctx context.Context, tcp bool) (tunnelPath, error)
 	return p, nil
 }
 
-func (cm *ClientMux) connectTransport(parent context.Context) (tunnelPath, error) {
+func (cm *ClientMux) connectTransport(parent context.Context, firstTCP bool) (tunnelPath, error) {
 	if cm.tlsNode.UDPPort == 0 {
 		return cm.dialPath(parent, cm.tlsConfig != nil)
 	}
@@ -92,7 +97,6 @@ func (cm *ClientMux) connectTransport(parent context.Context) (tunnelPath, error
 			}
 		}()
 	}
-	firstTCP := !cm.preferUDP
 	launch(firstTCP)
 	timer := time.NewTimer(250 * time.Millisecond)
 	defer timer.Stop()
@@ -136,9 +140,9 @@ func (cm *ClientMux) connectTransport(parent context.Context) (tunnelPath, error
 func (cm *ClientMux) transportName() string {
 	if cm != nil {
 		switch cm.activeTransport.Load() {
-		case 1:
+		case transportUDP:
 			return "UDP"
-		case 2:
+		case transportTCP:
 			if cm.tlsNode.RealityName != "" {
 				return "REALITY"
 			}

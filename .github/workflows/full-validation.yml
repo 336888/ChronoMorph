@@ -1,0 +1,55 @@
+name: Slacker full validation
+
+on:
+  push:
+    branches:
+      - fix/server-relay-accounting
+  pull_request:
+    paths:
+      - '**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/full-validation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Unit and integration tests
+        run: go test -mod=readonly -timeout 12m -count=1 ./...
+      - name: Race detector
+        run: go test -race -mod=readonly -timeout 15m -count=1 ./...
+      - name: Linux amd64 build
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=readonly -trimpath -o /tmp/slacker-linux-amd64 .
+      - name: Linux arm64 build
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -mod=readonly -trimpath -o /tmp/slacker-linux-arm64 .
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Windows tests
+        run: go test -mod=readonly -timeout 12m -count=1 ./...
+      - name: Windows amd64 GUI build
+        shell: pwsh
+        run: |
+          go build -mod=readonly -trimpath -ldflags="-s -w -H=windowsgui" -o "$env:RUNNER_TEMP/Slacker-windows-amd64.exe" .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Slacker-windows-amd64-validation
+          path: ${{ runner.temp }}/Slacker-windows-amd64.exe
+          if-no-files-found: error

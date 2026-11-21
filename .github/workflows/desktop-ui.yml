@@ -1,0 +1,42 @@
+name: Windows desktop preview
+
+on:
+  pull_request:
+    paths:
+      - '**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/desktop-ui.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      CGO_ENABLED: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Exercise the native window and resource editor
+        shell: pwsh
+        run: |
+          $env:CHRONOMORPH_TEST_EXE = Join-Path $env:RUNNER_TEMP 'Slacker.exe'
+          $env:CHRONOMORPH_PREVIEW = Join-Path $env:RUNNER_TEMP 'Slacker-Home.png'
+          $env:SLACKER_RESOURCES_PREVIEW = Join-Path $env:RUNNER_TEMP 'Slacker-Resources.png'
+          go build -mod=readonly -trimpath -ldflags="-s -w -H=windowsgui" -o $env:CHRONOMORPH_TEST_EXE .
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          go test -mod=readonly -timeout 6m -count=1 -run 'TestWindowsGUIProcess|TestIndependentResourceSync|TestResourceEdits' -v .
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Slacker-desktop-preview
+          path: |
+            ${{ runner.temp }}/Slacker-Home.png
+            ${{ runner.temp }}/Slacker-Resources.png
+          if-no-files-found: warn

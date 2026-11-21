@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 )
 
 func TestFailoverRequiresLiveStandby(t *testing.T) {
@@ -49,4 +51,26 @@ func TestFailoverRequiresLiveStandby(t *testing.T) {
 	if g.cm.sess == nil || g.cm.sess.IsClosed() {
 		t.Fatal("discarded the confirmed connection during activation")
 	}
+}
+
+func TestFailoverConfirmsWithoutFullHeartbeatWait(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		cm := &ClientMux{closed: true}
+		g := GUIController{cfg: &Config{}, running: true, cm: cm}
+		stop := make(chan struct{})
+		defer close(stop)
+		g.StartAutoFailover(stop)
+		synctest.Wait()
+		generation := func() uint64 { cm.mu.Lock(); defer cm.mu.Unlock(); return cm.generation }
+		time.Sleep(23 * time.Second)
+		synctest.Wait()
+		if generation() != 0 {
+			t.Fatal("discarded active node before three failures")
+		}
+		time.Sleep(2 * time.Second)
+		synctest.Wait()
+		if generation() != 1 {
+			t.Fatal("confirmation waited for the full heartbeat interval")
+		}
+	})
 }

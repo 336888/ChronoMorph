@@ -37,11 +37,13 @@ const (
 func (p *tunPolicy) path(m *M.Metadata) (tunPath, error) {
 	r := p.opts.mode
 	ip := m.DstIP.Unmap()
+	dns := m.DstPort == 53 && p.opts.DNS
 	if p.endpoint != nil && p.endpoint.router != nil {
 		router := p.endpoint.router
+		cm := p.endpoint.current.Load()
 		if h := router.routes.Load().match(ip.String()); h.action == "REJECT" {
 			return pathProxy, fmt.Errorf("目标 IP 命中阻止规则")
-		} else if h.action == "DIRECT" && !router.IsGlobalMode() {
+		} else if h.action == "DIRECT" && !dns && !router.IsGlobalMode() && cm != nil && cm.entry == nil {
 			return pathPhysical, nil
 		}
 	}
@@ -58,7 +60,6 @@ func (p *tunPolicy) path(m *M.Metadata) (tunPath, error) {
 	}
 	selected := true
 	needOwner := len(p.opts.Processes) > 0
-	dns := m.DstPort == 53 && p.opts.DNS
 	if dns && !p.opts.SelectedDNS {
 		return pathDNS, nil
 	}

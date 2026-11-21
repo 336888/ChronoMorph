@@ -164,7 +164,11 @@ func (g *GUIController) deleteProfile(idx int, selected NodeProfile) error {
 }
 
 func SaveConfigAtomic(path string, cfg *Config) error {
-	b, err := json.MarshalIndent(cfg, "", "  ")
+	return saveJSONAtomic(path, cfg)
+}
+
+func saveJSONAtomic(path string, doc any) error {
+	b, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return err
 	}
