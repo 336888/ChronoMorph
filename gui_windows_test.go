@@ -191,15 +191,16 @@ func TestWindowsGUIProcess(t *testing.T) {
 	// Post the click because a modal confirmation runs on the GUI thread.
 	confirmDeletion := func(choice uintptr) {
 		uc("PostMessageW", del, 0x00f5, 0, 0)
-		var dialog uintptr
-		wait("delete confirmation did not appear", func() bool {
+		var dialog, button uintptr
+		wait("delete confirmation button did not appear", func() bool {
 			dialog = uc("FindWindowW", uintptr(unsafe.Pointer(utf("#32770"))), uintptr(unsafe.Pointer(utf("删除选中节点"))))
-			return dialog != 0 && uc("GetWindow", dialog, 4) == native
+			if dialog == 0 || uc("GetWindow", dialog, 4) != native {
+				return false
+			}
+			// The top-level window can exist before MessageBox creates its buttons.
+			button = uc("GetDlgItem", dialog, choice)
+			return button != 0 && uc("IsWindowVisible", button) != 0 && uc("IsWindowEnabled", button) != 0
 		})
-		button := uc("GetDlgItem", dialog, choice)
-		if button == 0 {
-			t.Fatal("missing confirmation option")
-		}
 		uc("SendMessageW", button, 0x00f5, 0, 0)
 		wait("confirmation stayed open", func() bool { return uc("IsWindow", dialog) == 0 })
 	}
