@@ -7,7 +7,7 @@ go mod verify || exit /b 1
 go test -mod=readonly -v ./...
 if errorlevel 1 ( pause & exit /b 1 )
 
-set "VER=v1.4.0"
+set "VER=v1.4.1"
 set "LDFLAGS=-s -w -X main.AppVersion=%VER%"
 
 if exist dist rmdir /s /q dist

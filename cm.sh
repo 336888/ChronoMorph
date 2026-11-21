@@ -21,12 +21,6 @@ check_root() {
         exit 1
     fi
 }
-install_shortcut() {
-    if [[ "$(realpath "$0")" != "$MGR_PATH" ]]; then
-        install -m 755 "$0" "$MGR_PATH"
-    fi
-}
-
 get_status_badge() {
     if systemctl is-active --quiet chronomorph 2>/dev/null; then echo -e "${GREEN}运行中${PLAIN}"
     elif [[ -f "$BIN_PATH" ]]; then echo -e "${YELLOW}已停止${PLAIN}"
@@ -47,41 +41,81 @@ verify_binary() {
     (cd "$dir" && sha256sum -c - <<< "$line")
 }
 
-fetch_latest_from_github() {
-    local work=$1 name=$2 api="https://api.github.com/repos/${GITHUB_REPO}/releases"
-    local auth=() file id
-    if [[ -n ${GITHUB_TOKEN:-} ]]; then auth=(-H "Authorization: Bearer ${GITHUB_TOKEN}"); fi
-    curl --proto '=https' --proto-redir '=https' -fsSL --retry 2 "${auth[@]}" "$api/latest" -o "$work/release.json" || return 1
-    for file in "$name" SHA256SUMS.txt; do
-        id=$(jq -er --arg f "$file" '.assets[] | select(.name == $f) | .id | numbers' "$work/release.json") || return 1
-        [[ $id =~ ^[0-9]+$ ]] || return 1
-        curl --proto '=https' --proto-redir '=https' -fsSL --retry 2 "${auth[@]}" -H 'Accept: application/octet-stream' "$api/assets/$id" -o "$work/$file" || return 1
+# All three installed files must come from one verified package.
+verify_package() {
+    local dir=$1 name=$2 file
+    for file in "$name" cm-reality cm.sh; do
+        [[ -s "$dir/$file" && ! -L "$dir/$file" ]] || { echo "安装包缺少有效的 $file" >&2; return 1; }
+        verify_binary "$dir" "$file" "$dir/SHA256SUMS.txt" || return 1
     done
-    verify_binary "$work" "$name" "$work/SHA256SUMS.txt"
 }
 
-stage_binary() {
-    local work=$1 name=$2 dir file
-    for file in "$name" chronomorph; do
-        for dir in "$SCRIPT_DIR" "$PWD"; do
-            [[ -f "$dir/$file" && ! "$dir/$file" -ef "$BIN_PATH" ]] || continue
-            install -m 700 "$dir/$file" "$work/$name" || return 1
-            if [[ -f "$dir/SHA256SUMS.txt" ]]; then
-                verify_binary "$work" "$name" "$dir/SHA256SUMS.txt" || return 1
-            fi
-            return 0
-        done
-    done
-    if [[ -f "$BIN_PATH" && -z ${GITHUB_TOKEN:-} ]]; then
-        install -m 700 "$BIN_PATH" "$work/$name"
+github_download() {
+    local url=$1 out=$2 accept=$3 token=$4
+    local options=(--proto '=https' --proto-redir '=https' -fsSL --retry 2 --connect-timeout 10 --max-time 300)
+    # curl reads the secret header on stdin and strips authorization on cross-host redirects.
+    if [[ -n $token ]]; then
+        printf 'Authorization: Bearer %s\n' "$token" |
+            curl -q "${options[@]}" -H @- -H "Accept: $accept" -o "$out" "$url"
     else
-        fetch_latest_from_github "$work" "$name" || {
-            echo "无法下载或校验服务端。私有仓库可直接下载并解压本架构的 Debian 离线包。" >&2
-            return 1
-        }
-        chmod 700 "$work/$name"
+        curl -q "${options[@]}" -H "Accept: $accept" -o "$out" "$url"
     fi
 }
+
+fetch_release_package() (
+    set +x
+    local work=$1 name=$2 pkg="chronomorph-debian-${2##*-}" api="https://api.github.com/repos/$GITHUB_REPO/releases"
+    local token="${GH_TOKEN:-${GITHUB_TOKEN:-}}" file id release=latest
+    if [[ -n ${3:-} ]]; then
+        [[ $3 =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+        release="tags/$3"
+    fi
+    unset GH_TOKEN GITHUB_TOKEN
+    if [[ -z $token ]] && command -v gh >/dev/null; then
+        token=$(gh auth token --hostname github.com 2>/dev/null) || token=''
+    fi
+    if [[ -z $token && -t 0 ]]; then
+        read -rsp "GitHub 仓库只读 Token（输入不会显示）: " token || return 1
+        printf '\n' >&2
+    fi
+    if ! github_download "$api/$release" "$work/release.json" application/vnd.github+json "$token"; then
+        echo "读取 GitHub Release 失败。私有仓库需要该仓库 Contents 读取权限；也可从完整离线包内运行 cm.sh。" >&2
+        return 1
+    fi
+    for file in "$pkg.tar.gz" SHA256SUMS.txt; do
+        id=$(jq -er --arg f "$file" '[.assets[] | select(.name == $f)] | select(length==1) | .[0].id | numbers' "$work/release.json") || { echo "发布页缺少 $file" >&2; return 1; }
+        [[ $id =~ ^[0-9]+$ ]] || return 1
+        github_download "$api/assets/$id" "$work/$file" application/octet-stream "$token" || return 1
+    done
+    verify_binary "$work" "$pkg.tar.gz" "$work/SHA256SUMS.txt" || return 1
+    mkdir -m 700 "$work/$pkg" || return 1
+    # Extract only expected members into fresh regular files in a private directory.
+    for file in SHA256SUMS.txt "$name" cm-reality cm.sh; do
+        tar -xzOf "$work/$pkg.tar.gz" -- "$pkg/$file" > "$work/$pkg/$file" || return 1
+    done
+    verify_package "$work/$pkg" "$name"
+)
+
+install_release() (
+    check_root
+    local name package work
+    name=$(release_binary_name) || exit 1
+    if [[ -f "$SCRIPT_DIR/$name" && -f "$SCRIPT_DIR/cm-reality" && -f "$SCRIPT_DIR/SHA256SUMS.txt" && "$SCRIPT_DIR" != "$(dirname "$BIN_PATH")" ]]; then
+        do_install
+        exit
+    fi
+    if ! command -v curl >/dev/null || ! command -v jq >/dev/null; then
+        env -u GH_TOKEN -u GITHUB_TOKEN apt-get update -qq
+        env -u GH_TOKEN -u GITHUB_TOKEN DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ca-certificates curl jq
+    fi
+    work=$(mktemp -d) || exit 1
+    trap 'rm -rf -- "$work"' EXIT
+    fetch_release_package "$work" "$name" || exit 1
+    unset GH_TOKEN GITHUB_TOKEN
+    package="$work/chronomorph-debian-${name##*-}"
+    # Use the installer shipped with these binaries, including future migrations.
+    bash "$package/cm.sh" --install
+)
 
 prepare_config_dir() {
     local candidate=$1 backup
@@ -177,29 +211,86 @@ check_service_entries() {
     done
 }
 
+activate_package() (
+    local work=$1 name=$2 helper active=0 dest backup rc
+    helper="$(dirname "$BIN_PATH")/cm-reality"
+    local outputs=("$BIN_PATH" "$helper" "$MGR_PATH")
+    mkdir "$work/previous" || return 1
+    for dest in "${outputs[@]}"; do
+        if [[ -e $dest || -L $dest ]]; then
+            [[ -f $dest && ! -L $dest ]] || { echo "安装位置已有非普通文件: $dest" >&2; return 1; }
+            cp -p -- "$dest" "$work/previous/${dest##*/}" || return 1
+        fi
+    done
+    if systemctl is-active --quiet chronomorph; then active=1; fi
+    rollback_package() {
+        rc=$?
+        trap - EXIT HUP INT TERM
+        if ((rc == 0)); then return; fi
+        local restored=1
+        for dest in "${outputs[@]}"; do
+            backup="$work/previous/${dest##*/}"
+            if [[ -f $backup ]]; then
+                cp -p -- "$backup" "$work/restore" && mv -fT -- "$work/restore" "$dest" || restored=0
+            else
+                rm -f -- "$dest" || restored=0
+            fi
+        done
+        if [[ -f "$work/pre-dual.json" ]]; then
+            install -m 600 "$work/pre-dual.json" "$CFG_DIR/.dual-config.tmp" && mv -fT "$CFG_DIR/.dual-config.tmp" "$CFG_FILE" || restored=0
+        fi
+        if ((restored && active)); then
+            systemctl restart chronomorph || restored=0
+        else
+            systemctl stop chronomorph || true
+        fi
+        if ((restored)); then
+            echo "升级失败，已恢复原程序和配置。" >&2
+        else
+            touch "$work/keep-backup"
+            echo "回滚未完成，备份位于 $work/previous。请检查服务状态。" >&2
+        fi
+        exit "$rc"
+    }
+    trap rollback_package EXIT
+    trap 'exit 1' HUP INT TERM
+    prepare_dual_config "$work/$name" "$work" || exit 1
+    mv -fT -- "$work/cm-reality" "$helper" || exit 1
+    mv -fT -- "$work/$name" "$BIN_PATH" || exit 1
+    if ! systemctl restart chronomorph || ! check_service_entries; then
+        # Preserve the previous UDP-only setup if the additional TCP port is occupied.
+        [[ -f "$work/pre-dual.json" ]] || exit 1
+        if jq -e '.reality or .website' "$work/pre-dual.json" >/dev/null; then exit 1; fi
+        install -m 600 "$work/pre-dual.json" "$CFG_DIR/.dual-config.tmp" || exit 1
+        mv -fT "$CFG_DIR/.dual-config.tmp" "$CFG_FILE" || exit 1
+        systemctl restart chronomorph && systemctl is-active --quiet chronomorph || exit 1
+        echo "已恢复 UDP 配置。可选 9 设置空闲的 TLS/TCP 端口。" >&2
+    fi
+    mv -fT -- "$work/cm.sh" "$MGR_PATH" || exit 1
+)
+
 do_install() (
     set -e
     export DEBIAN_FRONTEND=noninteractive
-    local name work mk listen version previous=0 was_active=0
+    unset GH_TOKEN GITHUB_TOKEN
+    local name work mk listen version file
     exec 9>"$DEPLOY_LOCK"
     flock -n 9 || { echo "已有安装任务在运行" >&2; exit 1; }
     name=$(release_binary_name)
     mkdir -p "$(dirname "$BIN_PATH")"
     work=$(mktemp -d "$(dirname "$BIN_PATH")/.chronomorph-install.XXXXXXXX")
-    trap 'rm -rf -- "$work"' EXIT
-    apt-get update -qq
-    apt-get install -y -qq nftables chrony curl jq >/dev/null
-    stage_binary "$work" "$name"
-    local helper="$(dirname "$BIN_PATH")/cm-reality" has_helper=0
-    if [[ -f "$SCRIPT_DIR/cm-reality" ]]; then
-        install -m 755 "$SCRIPT_DIR/cm-reality" "$work/cm-reality"
-        verify_binary "$work" cm-reality "$SCRIPT_DIR/SHA256SUMS.txt"
-        "$work/cm-reality" version
-        has_helper=1
-    fi
+    trap '[[ -f "$work/keep-backup" ]] || rm -rf -- "$work"' EXIT
+    verify_package "$SCRIPT_DIR" "$name"
+    for file in "$name" cm-reality cm.sh; do
+        install -m 755 "$SCRIPT_DIR/$file" "$work/$file"
+        verify_binary "$work" "$file" "$SCRIPT_DIR/SHA256SUMS.txt"
+    done
+    "$work/cm-reality" version
     version=$("$work/$name" version)
     [[ $version == "ChronoMorph v"* ]] || { echo "程序版本信息无效" >&2; exit 1; }
     echo "$version"
+    apt-get update -qq
+    apt-get install -y -qq nftables chrony curl jq ca-certificates >/dev/null
     prepare_config_dir "$work/$name"
     if [[ -L "$CFG_FILE" && ! -f "$CFG_FILE" ]]; then echo "配置符号链接无效" >&2; exit 1; fi
     if [[ ! -e "$CFG_FILE" ]]; then
@@ -269,36 +360,7 @@ WantedBy=multi-user.target
 EOF
     systemctl daemon-reload
     systemctl enable chronomorph
-    if [[ -f "$BIN_PATH" ]]; then cp -p "$BIN_PATH" "$work/previous"; previous=1; fi
-    if systemctl is-active --quiet chronomorph; then was_active=1; fi
-    prepare_dual_config "$work/$name" "$work"
-    chmod 755 "$work/$name"
-    if ((has_helper)); then
-        if [[ -f "$helper" ]]; then cp -p "$helper" "$work/previous-helper"; fi
-        mv -fT -- "$work/cm-reality" "$helper"
-    fi
-    mv -fT -- "$work/$name" "$BIN_PATH"
-    if ! systemctl restart chronomorph || ! check_service_entries; then
-        if [[ -f "$work/pre-dual.json" ]]; then
-            install -m 600 "$work/pre-dual.json" "$CFG_DIR/.dual-config.tmp"
-            mv -fT "$CFG_DIR/.dual-config.tmp" "$CFG_FILE"
-            if ! jq -e '(.reality != null) or (.website != null)' "$CFG_FILE" >/dev/null && systemctl restart chronomorph && systemctl is-active --quiet chronomorph; then
-                echo "TCP $LISTEN_PORT 启用失败，已恢复 UDP 配置。请选 9 指定其他空闲 TCP 端口，再导入双协议链接。" >&2
-                return 0
-            fi
-        fi
-        if ((has_helper)); then
-            if [[ -f "$work/previous-helper" ]]; then mv -fT "$work/previous-helper" "$helper"; else rm -f -- "$helper"; fi
-        fi
-        if ((previous)); then
-            mv -fT "$work/previous" "$BIN_PATH"
-            if ((was_active)); then systemctl restart chronomorph; fi
-            echo "启动失败，已恢复先前的服务端程序。" >&2
-        else
-            echo "服务启动失败，请查看 journalctl -u chronomorph。" >&2
-        fi
-        exit 1
-    fi
+    activate_package "$work" "$name"
     echo -e "${GREEN}部署完成！随时输入 cm 打开管理菜单。${PLAIN}"
     show_links
 )
@@ -496,7 +558,7 @@ configure_entry() (
                 echo "请先在 $other 菜单中恢复并存"; return 1
             fi
             if [[ $mode == reality ]]; then
-                [[ -x "$(dirname "$BIN_PATH")/cm-reality" ]] || { echo "请解压本版本 Debian 完整包，从包内运行 cm.sh 并选 1"; return 1; }
+                [[ -x "$(dirname "$BIN_PATH")/cm-reality" ]] || { echo "请先选 1 安装或升级完整组件"; return 1; }
                 read -rp "目标 HTTPS 网站域名（例如 aws.amazon.com）: " name || return 1
             else
                 read -rp "你控制的 HTTPS 域名: " name || return 1
@@ -542,21 +604,27 @@ configure_entry() (
     fi
 )
 main_menu() {
-    check_root; install_shortcut
+    check_root
     while true; do
         clear
         echo -e "${CYAN}=== ChronoMorph Debian 管理面板 [$(get_status_badge)] ===${PLAIN}"
-        echo "1. 一键安装部署    2. 状态与跳频排障  3. 实时日志"
+        echo "1. 一键安装或升级    2. 状态与跳频排障  3. 实时日志"
         echo "4. 导出分享链接    5. 实时流量看板    6. 热重载配置"
         echo "7. 打包备份配置    8. 彻底卸载    9. 设置双协议 TCP 端口"
         echo "10. 迁移旧版 TLS 证书    11. 自有域名 HTTPS 网站入口    12. REALITY 免证书入口    0. 退出"
         read -rp "请选择 [0-12]: " ch
         case "$ch" in
-            1) do_install ;; 2) show_status ;; 3) journalctl -u chronomorph -f -n 50 || true ;;
+            1) install_release; read -rp "按回车打开新版菜单..." _; exec bash "$MGR_PATH" ;; 2) show_status ;; 3) journalctl -u chronomorph -f -n 50 || true ;;
             4) show_links ;; 5) show_traffic_stats ;; 6) systemctl reload-or-restart chronomorph ;;
             7) do_backup ;; 8) do_uninstall ;; 9) enable_tls ;; 10) migrate_tls_identity || echo "证书迁移未完成" >&2 ;; 12) configure_entry reality || echo "REALITY 操作未完成" >&2 ;; 11) configure_website || echo "网站操作未完成" >&2 ;; 0) exit 0 ;;
         esac
         read -rp "按回车返回..." _
     done
 }
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then main_menu; fi
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    case ${1:-} in
+        --install) install_release ;;
+        '') main_menu ;;
+        *) echo '用法: cm [--install]' >&2; exit 2 ;;
+    esac
+fi
