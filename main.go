@@ -556,7 +556,14 @@ func (cm *ClientMux) discardSilentPath(session *smux.Session, since time.Time) b
 	} else if cm.tcpPath != nil && (cm.tlsNode.UDPPort != 0 || cm.tcpPath.profile == tlsProfileReady) {
 		last = &cm.tcpPath.lastReply
 	}
-	if last == nil || last.Load() >= since.UnixNano() {
+	if last == nil {
+		return false
+	}
+	// A TLS session can receive keepalive or flow-control frames after a
+	// request starts without ever acknowledging that request. When the only
+	// request stream has timed out, permit reconnect even if those frames
+	// advanced lastReply. Do not disrupt other active streams.
+	if last.Load() >= since.UnixNano() && !(cm.tcpPath != nil && cm.tlsNode.UDPPort == 0 && session.NumStreams() == 0) {
 		return false
 	}
 	if cm.tlsNode.UDPPort != 0 {
