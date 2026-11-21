@@ -2,8 +2,13 @@ name: Release ChronoMorph
 
 on:
   push:
-    tags:
-      - 'v*'
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Version tag
+        required: true
+        default: v1.0.0
 
 permissions:
   contents: write
@@ -11,22 +16,40 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ inputs.tag || github.ref_name }}
+      CGO_ENABLED: '0'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
-      - run: go mod tidy && go test -v ./...
-      - run: |
+          go-version: '1.24.13'
+      - name: Verify modules and test
+        run: |
+          go mod verify
+          go test -mod=readonly -v ./...
+      - name: Build and verify release files
+        run: |
+          [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           mkdir -p release
-          VER="${GITHUB_REF_NAME}"
-          LDFLAGS="-s -w -X main.AppVersion=${VER}"
-          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="${LDFLAGS} -H=windowsgui" -o release/ChronoMorph-windows-amd64.exe .
-          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="${LDFLAGS}" -o release/chronomorph-linux-amd64 .
-          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="${LDFLAGS}" -o release/chronomorph-linux-arm64 .
+          build_date=$(git show -s --format=%cs HEAD)
+          flags="-s -w -X main.AppVersion=${VERSION} -X main.BuildTime=${build_date}"
+          build() {
+            GOOS="$1" GOARCH="$2" go build -mod=readonly -trimpath -buildvcs=false -ldflags="$flags ${4:-}" -o "release/$3" .
+          }
+          build windows amd64 ChronoMorph-windows-amd64.exe -H=windowsgui
+          build linux amd64 chronomorph-linux-amd64
+          build linux arm64 chronomorph-linux-arm64
+          build android arm64 chronomorph_android_arm64
+          release/chronomorph-linux-amd64 version
           cp cm.sh setup_win.ps1 uninstall_win.ps1 client.example.json release/
-          cd release && sha256sum * > SHA256SUMS.txt
+          cd release
+          sha256sum * > SHA256SUMS.txt
+          sha256sum -c SHA256SUMS.txt
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.VERSION }}
+          target_commitish: ${{ github.sha }}
           files: release/*
+          fail_on_unmatched_files: true
           generate_release_notes: true

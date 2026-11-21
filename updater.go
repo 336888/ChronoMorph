@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-const githubRepo = "YOUR_USERNAME/ChronoMorph"
+const githubRepo = "336888/ChronoMorph"
 
 type UpdateInfo struct {
 	Current   string `json:"current"`

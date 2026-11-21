@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-GITHUB_REPO="YOUR_USERNAME/ChronoMorph"
+GITHUB_REPO="336888/ChronoMorph"
 GITHUB_TOKEN=""
 
 BIN_PATH="/usr/local/bin/chronomorph"
@@ -14,8 +14,17 @@ LISTEN_PORT=40000
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; PLAIN='\033[0m'
 
-check_root() { [[ $EUID -ne 0 ]] && { echo -e "${RED}请使用 root 权限运行！${PLAIN}"; exit 1; }; }
-install_shortcut() { [[ "$(realpath "$0")" != "$MGR_PATH" ]] && { cp -f "$0" "$MGR_PATH"; chmod +x "$MGR_PATH"; }; }
+check_root() {
+    if [[ $EUID -ne 0 ]]; then
+        echo -e "${RED}请使用 root 权限运行！${PLAIN}"
+        exit 1
+    fi
+}
+install_shortcut() {
+    if [[ "$(realpath "$0")" != "$MGR_PATH" ]]; then
+        install -m 755 "$0" "$MGR_PATH"
+    fi
+}
 
 get_status_badge() {
     if systemctl is-active --quiet chronomorph 2>/dev/null; then echo -e "${GREEN}运行中${PLAIN}"
@@ -57,6 +66,7 @@ gen_share_link() {
     ip6=$(curl -6 -s --max-time 4 https://ifconfig.me || true)
     [[ -n "$ip4" ]] && echo -e "${CYAN}[IPv4]${PLAIN} cm://$(printf '{"s":"%s","k":"%s","n":"%s-v4"}' "$ip4" "$key" "$name" | base64 -w0 | tr '+/' '-_' | tr -d '=')"
     [[ -n "$ip6" ]] && echo -e "${CYAN}[IPv6]${PLAIN} cm://$(printf '{"s":"%s","k":"%s","n":"%s-v6"}' "$ip6" "$key" "$name" | base64 -w0 | tr '+/' '-_' | tr -d '=')"
+    return 0
 }
 
 do_install() {

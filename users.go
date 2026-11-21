@@ -50,7 +50,8 @@ type MultiUserEngine struct {
 
 func NewMultiUserEngine(cfgs []UserEntry) (*MultiUserEngine, error) {
 	var list []*UserEntry
-	for _, u := range cfgs {
+	for i := range cfgs {
+		u := &cfgs[i]
 		raw, err := hex.DecodeString(u.KeyHex)
 		if err != nil || len(raw) != 32 {
 			return nil, errors.New("用户密钥无效: " + u.Name)
