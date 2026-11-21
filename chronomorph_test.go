@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
-	"net"
 	"testing"
 )
 
@@ -63,16 +62,7 @@ func TestChronoMorphCore(t *testing.T) {
 	}
 }
 
-func TestSTUNAndShareLink(t *testing.T) {
-	req := BuildSTUNBindingRequest()
-	if !IsSTUNBindingRequest(req) {
-		t.Fatal("未能识别合法 STUN 请求")
-	}
-	resp := BuildSTUNBindingResponse(req, &net.UDPAddr{IP: net.ParseIP("1.2.3.4"), Port: 12345})
-	if len(resp) != 32 || !bytes.Equal(req[8:20], resp[8:20]) {
-		t.Fatal("STUN 响应格式或 Transaction ID 不匹配")
-	}
-
+func TestShareLink(t *testing.T) {
 	key := make([]byte, 32)
 	_, _ = rand.Read(key)
 	keyHex := hex.EncodeToString(key)

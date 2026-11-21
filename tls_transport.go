@@ -52,20 +52,15 @@ func tlsClientKey(master []byte) ed25519.PrivateKey {
 	return ed25519.NewKeyFromSeed(mac.Sum(nil))
 }
 
-func issueCertificate(key ed25519.PrivateKey, usage x509.ExtKeyUsage, name string) ([]byte, error) {
+func issueCertificate(key ed25519.PrivateKey, usage x509.ExtKeyUsage) ([]byte, error) {
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
 		return nil, err
 	}
-	subject := pkix.Name{CommonName: name}
-	if name == "" {
-		// A self-signed certificate needs a non-empty issuer DN. Its unique
-		// serial is sufficient: clients authenticate the full certificate by pin.
-		subject.SerialNumber = serial.Text(16)
-	}
 	now := time.Now()
 	cert := &x509.Certificate{
-		SerialNumber: serial, Subject: subject,
+		// A self-signed certificate needs a non-empty issuer DN.
+		SerialNumber: serial, Subject: pkix.Name{SerialNumber: serial.Text(16)},
 		NotBefore: now.Add(-24 * time.Hour), NotAfter: now.AddDate(5, 0, 0),
 		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{usage},
 		BasicConstraintsValid: true,
@@ -75,37 +70,19 @@ func issueCertificate(key ed25519.PrivateKey, usage x509.ExtKeyUsage, name strin
 
 const tlsIdentityFile = "transport.pem"
 
-// The name describes the client credential format inside the TLS 1.3 encrypted
-// Certificate message. Authorization always uses the registered public key.
-const tlsClientV2Name = "ChronoMorph client v2"
-
-// Older clients negotiate these profiles via ALPN and expect exactly ack 1.
-// Retain the server mapping for them. Current clients send no ALPN extension.
-const tlsMuxV2 = "chronomorph-smux/2"
-const tlsMuxV2Ready = "chronomorph-smux/2-ready"
+// Recognize credentials issued by v1.2.2–v1.2.5 after authentication.
+const legacyReadyClientName = "ChronoMorph client v2"
 
 type tlsProfile uint8
 
 const (
 	tlsProfileV1 tlsProfile = iota
-	tlsProfileV2
 	tlsProfileReady
 )
 const (
 	tlsAckLegacy byte = 1
 	tlsAckReady  byte = 2
 )
-
-func legacyTLSProfile(alpn string) tlsProfile {
-	switch alpn {
-	case tlsMuxV2Ready:
-		return tlsProfileReady
-	case tlsMuxV2:
-		return tlsProfileV2
-	default:
-		return tlsProfileV1
-	}
-}
 
 // Publish the entire key pair atomically and never replace an existing server identity.
 func serverIdentity(dir string, create bool) (tls.Certificate, error) {
@@ -118,7 +95,7 @@ func serverIdentity(dir string, create bool) (tls.Certificate, error) {
 	if err != nil {
 		return pair, err
 	}
-	der, err := issueCertificate(key, x509.ExtKeyUsageServerAuth, "")
+	der, err := issueCertificate(key, x509.ExtKeyUsageServerAuth)
 	if err != nil {
 		return pair, err
 	}
@@ -159,7 +136,7 @@ func clientTLSConfig(master []byte, node TLSNode) (*tls.Config, error) {
 		return nil, errors.New("TLS 证书指纹缺失")
 	}
 	key := tlsClientKey(master)
-	der, err := issueCertificate(key, x509.ExtKeyUsageClientAuth, tlsClientV2Name)
+	der, err := issueCertificate(key, x509.ExtKeyUsageClientAuth)
 	if err != nil {
 		return nil, err
 	}
@@ -205,7 +182,7 @@ func (cm *ClientMux) dialTLS(ctx context.Context) (net.Conn, error) {
 	var profile tlsProfile
 	switch ack[0] {
 	case tlsAckLegacy:
-		profile = legacyTLSProfile(conn.ConnectionState().NegotiatedProtocol)
+		profile = tlsProfileV1
 	case tlsAckReady:
 		profile = tlsProfileReady
 	default:
@@ -288,7 +265,6 @@ func acceptTLS(raw net.Conn, cert tls.Certificate, users *MultiUserEngine) {
 	_ = raw.SetDeadline(time.Now().Add(6 * time.Second))
 	var user *UserEntry
 	conn := tls.Server(raw, &tls.Config{
-		NextProtos: []string{tlsMuxV2Ready, tlsMuxV2},
 		MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{cert},
 		ClientAuth: tls.RequireAnyClientCert, SessionTicketsDisabled: true,
 		VerifyConnection: func(cs tls.ConnectionState) error {
@@ -313,10 +289,12 @@ func acceptTLS(raw net.Conn, cert tls.Certificate, users *MultiUserEngine) {
 	if conn.Handshake() != nil || user == nil {
 		return
 	}
-	state := conn.ConnectionState()
-	profile := legacyTLSProfile(state.NegotiatedProtocol)
+	subject := conn.ConnectionState().PeerCertificates[0].Subject
+	profile := tlsProfileV1
 	ack := tlsAckLegacy
-	if state.NegotiatedProtocol == "" && state.PeerCertificates[0].Subject.CommonName == tlsClientV2Name {
+	// Pre-v1.2.2 clients need the legacy acknowledgement and default to
+	// multiplexing v1 when the server selects no ALPN.
+	if subject.CommonName == legacyReadyClientName || (subject.CommonName == "" && subject.SerialNumber != "") {
 		profile, ack = tlsProfileReady, tlsAckReady
 	}
 	if _, err := conn.Write([]byte{ack}); err != nil {

@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"net"
 	"net/netip"
 	"strings"
@@ -46,6 +48,41 @@ func TestUDPReturnPath(t *testing.T) {
 	}
 }
 
+// WriteTo records what the UDP client would hand to the socket, including
+// when its moving destination port cannot be reserved by a loopback test.
+type packetRecorder struct {
+	net.PacketConn
+	writes [][]byte
+}
+
+func (r *packetRecorder) WriteTo(b []byte, _ net.Addr) (int, error) {
+	r.writes = append(r.writes, bytes.Clone(b))
+	return len(b), nil
+}
+
+func TestUDPStartsWithAuthenticatedData(t *testing.T) {
+	key := bytes.Repeat([]byte{0xab}, 32)
+	for _, fixed := range []int{0, 40000} {
+		sink := &packetRecorder{}
+		conn := NewClientRTPPacketConn(sink, net.IPv4(127, 0, 0, 1), NewChronoPacketEngine(key))
+		conn.fixedPort = fixed
+		data := dataShard(1, 99)
+		if _, err := conn.WriteTo(data, nil); err != nil {
+			t.Fatal(err)
+		}
+		if len(sink.writes) != 1 {
+			t.Fatalf("port %d: first write emitted %d datagrams", fixed, len(sink.writes))
+		}
+		engine, err := NewMultiUserEngine([]UserEntry{{KeyHex: hex.EncodeToString(key)}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, plain, err := engine.OpenPacket(sink.writes[0]); err != nil || !bytes.Equal(plain, data) {
+			t.Fatalf("port %d: first datagram did not authenticate: %v", fixed, err)
+		}
+	}
+}
+
 func TestAuthenticatedDuplicatesDoNotBanUDPPeer(t *testing.T) {
 	key, _ := hex.DecodeString(strings.Repeat("ab", 32))
 	engine, err := NewMultiUserEngine([]UserEntry{{KeyHex: hex.EncodeToString(key)}})
@@ -76,6 +113,11 @@ func TestAuthenticatedDuplicatesDoNotBanUDPPeer(t *testing.T) {
 	if err := server.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
+	// A real request from the old hopping client, followed by valid data.
+	prelude, _ := hex.DecodeString("000100002112a44200112233445566778899aabb")
+	if _, err := tx.Write(prelude); err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < 26; i++ {
 		if _, err := tx.Write(first); err != nil {
 			t.Fatal(err)
@@ -90,6 +132,13 @@ func TestAuthenticatedDuplicatesDoNotBanUDPPeer(t *testing.T) {
 		if err != nil || n != 32 || binary.LittleEndian.Uint32(buf) != want {
 			t.Fatalf("expected shard %d, got %d bytes, %v", want, n, err)
 		}
+	}
+	if err := tx.SetReadDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	var timeout net.Error
+	if _, err := tx.Read(buf); !errors.As(err, &timeout) || !timeout.Timeout() {
+		t.Fatalf("UDP server answered an unauthenticated prelude: %v", err)
 	}
 	if len(guard.records) != 0 {
 		t.Fatal("authenticated duplicate charged to the IP")

@@ -204,10 +204,7 @@ func (c *RTPPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
 			if c.guard != nil && c.guard.IsBanned(addr) {
 				continue
 			}
-			if IsSTUNBindingRequest(rawPkt) {
-				if ua, ok := addr.(*net.UDPAddr); ok {
-					_, _ = c.raw.WriteTo(BuildSTUNBindingResponse(rawPkt, ua), addr)
-				}
+			if isLegacySTUNPrelude(rawPkt) {
 				continue
 			}
 			u, plain, err := c.multiEng.OpenPacket(rawPkt)
@@ -251,9 +248,6 @@ func (c *RTPPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 		dst := &net.UDPAddr{IP: c.serverIP, Port: port}
 		if c.lastPort.Swap(int32(port)) != int32(port) {
 			LiveStats.activePort.Store(int32(port))
-			if c.fixedPort == 0 {
-				_, _ = c.raw.WriteTo(BuildSTUNBindingRequest(), dst)
-			}
 		}
 		_, err = c.raw.WriteTo(pkt, dst)
 		if err == nil {
