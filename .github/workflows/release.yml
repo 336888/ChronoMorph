@@ -8,7 +8,7 @@ on:
       tag:
         description: Version tag
         required: true
-        default: v1.4.4
+        default: v1.4.5
 
 permissions:
   contents: write
@@ -52,6 +52,7 @@ jobs:
           $env:CHRONOMORPH_TEST_EXE = Join-Path $env:RUNNER_TEMP 'Windows package test/ChronoMorph-windows-amd64.exe'
           $env:CHRONOMORPH_TEST_WINTUN = '1'
           $env:CHRONOMORPH_PREVIEW = Join-Path $env:RUNNER_TEMP 'ChronoMorph-desktop.png'
+          $env:CHRONOMORPH_LIVE_PREVIEW = Join-Path $env:RUNNER_TEMP 'ChronoMorph-connections.png'
           go test -count=1 -mod=readonly -v ./...
           exit $LASTEXITCODE
       - name: Test in-process REALITY with current and v1.4.2 peers
@@ -80,6 +81,7 @@ jobs:
           path: |
             ${{ runner.temp }}/ChronoMorph-windows-amd64.exe
             ${{ runner.temp }}/ChronoMorph-desktop.png
+            ${{ runner.temp }}/ChronoMorph-connections.png
             ${{ runner.temp }}/chronomorph-windows-amd64.zip
           if-no-files-found: error
   release:

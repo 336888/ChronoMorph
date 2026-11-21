@@ -18,6 +18,7 @@ import (
 )
 
 type Router struct {
+	live           *flowMonitor
 	ads            atomic.Pointer[adRules]
 	mu             sync.RWMutex
 	directSuffixes []string
@@ -149,11 +150,19 @@ func (r *Router) ShouldDirect(target string) bool {
 }
 
 func dialWithRouting(target string, cm *ClientMux, router *Router) (net.Conn, error) {
+	return dialProxyTCP(target, cm, router, nil, "")
+}
+
+func dialProxyTCP(target string, cm *ClientMux, router *Router, client net.Conn, protocol string) (net.Conn, error) {
 	if router.ShouldBlock(target) {
 		return nil, fmt.Errorf("blocked: %s", target)
 	}
 	if (cm == nil || cm.entry == nil) && router.ShouldDirect(target) {
-		return net.DialTimeout("tcp", target, 8*time.Second)
+		conn, err := net.DialTimeout("tcp", target, 8*time.Second)
+		if err != nil {
+			return nil, err
+		}
+		return router.monitor().tcp(client, conn, protocol, "直连", target), nil
 	}
 	if len(target) > 255 {
 		return nil, fmt.Errorf("target too long")
@@ -166,7 +175,7 @@ func dialWithRouting(target string, cm *ClientMux, router *Router) (net.Conn, er
 		started := time.Now()
 		err = sendDialRequest(stream, target, mode)
 		if err == nil {
-			return stream, nil
+			return router.monitor().tcp(client, stream, protocol, cmRoute(cm), target), nil
 		}
 		_ = stream.Close()
 		if errors.Is(err, errTargetRejected) || !cm.discardSilentPath(sess, started) || attempt != 0 {
@@ -233,7 +242,9 @@ func handleMixedProxy(c net.Conn, cm *ClientMux, router *Router) {
 		return
 	}
 	c = &bufferedProxyConn{Conn: c, reader: br}
-	if first[0] == 0x05 {
+	if first[0] == 4 {
+		handleSocks4(c, br, cm, router)
+	} else if first[0] == 0x05 {
 		handleSocks5Mixed(c, br, cm, router)
 	} else {
 		handleHTTPMixed(c, cm, router)
@@ -307,7 +318,7 @@ func handleSocks5Mixed(c net.Conn, br *bufio.Reader, cm *ClientMux, router *Rout
 	}
 	target := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 
-	remote, err := dialWithRouting(target, cm, router)
+	remote, err := dialProxyTCP(target, cm, router, c, "SOCKS5")
 	if err != nil {
 		if cm != nil {
 			cm.logProxyFailure(err)
@@ -353,14 +364,25 @@ func handleHTTPMixed(c net.Conn, cm *ClientMux, router *Router) {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
-			return dialWithRouting(address, cm, nil)
+			conn, err := dialWithRouting(address, cm, nil)
+			if err != nil {
+				return nil, err
+			}
+			return router.monitor().tcp(c, conn, "HTTP", cmRoute(cm), address), nil
 		},
 	}
 	defer transport.CloseIdleConnections()
 	// Separate pools so a routing-mode change cannot reuse an old direct
 	// connection for a request that now belongs in the tunnel.
 	direct := transport.Clone()
-	direct.DialContext = (&net.Dialer{Timeout: 8 * time.Second}).DialContext
+	dialer := &net.Dialer{Timeout: 8 * time.Second}
+	direct.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := dialer.DialContext(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		return router.monitor().tcp(c, conn, "HTTP", "直连", address), nil
+	}
 	defer direct.CloseIdleConnections()
 	fail := func(w http.ResponseWriter, _ *http.Request, err error) {
 		if cm != nil {
@@ -401,7 +423,7 @@ func handleHTTPMixed(c net.Conn, cm *ClientMux, router *Router) {
 		if _, _, err := net.SplitHostPort(target); err != nil {
 			target = net.JoinHostPort(strings.Trim(target, "[]"), "443")
 		}
-		remote, err := dialWithRouting(target, cm, router)
+		remote, err := dialProxyTCP(target, cm, router, c, "CONNECT")
 		if err != nil {
 			fail(w, req, err)
 			return

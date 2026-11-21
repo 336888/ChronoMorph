@@ -24,6 +24,7 @@ const (
 )
 const (
 	homePage = iota + 1
+	livePage
 	nodesPage
 	chainPage
 	adsPage
@@ -32,9 +33,11 @@ const (
 	importPage
 	manualPage
 	domainPage
+	benchPage
 )
 const (
 	navHome = iota + 100
+	navLive
 	navNodes
 	navChain
 	navAds
@@ -67,6 +70,10 @@ const (
 	addAllowedAction
 	saveAllowedAction
 	addAdSource
+	dropFlow
+	copyFlow
+	openBench
+	runBench
 )
 const (
 	nodesList = 200 + iota
@@ -80,6 +87,10 @@ const (
 	subscriptionEdit
 	domainEdit
 	allowedEdit
+	flowQuery
+	flowList
+	flowDetail
+	benchEdit
 )
 
 type nativeControl struct {
@@ -88,6 +99,7 @@ type nativeControl struct {
 	label string
 }
 type desktopResult struct {
+	benchText      string
 	originPage     int
 	message        string
 	err            error
@@ -97,6 +109,11 @@ type desktopResult struct {
 	measuredClient *ClientMux
 }
 type desktopUI struct {
+	liveIDs                                           []uint64
+	liveRows                                          string
+	owners                                            map[uint64]string
+	flowInfo, flowStatus                              string
+	benchText                                         string
 	adStatus                                          string
 	adPaused                                          bool
 	entryLabel                                        string
@@ -147,9 +164,10 @@ func (u *desktopUI) setupControls() {
 	n := createControl("STATIC", "", 0, 0x40004000, u.rect(214, 506, 600, 28), u.hwnd, noticeControl, u.instance)
 	uc("SendMessageW", n, 0x30, u.font(13, 400), 1)
 	u.controls[noticeControl] = &nativeControl{n, 0, ""}
-	for i, name := range []string{"连接概览", "我的节点", "链式代理", "去广告", "连接日志", "设置"} {
+	for i, name := range []string{"连接概览", "实时连接", "我的节点", "链式代理", "去广告", "连接日志", "设置"} {
 		u.button(navHome+i, 0, 14, 114+i*49, 158, 41, name)
 	}
+	u.setupLiveControls()
 	u.button(importAction, 0, 704, 27, 113, 37, "导入节点")
 	u.button(toggleAction, homePage, 650, 130, 139, 43, "启动连接")
 	u.button(pingAction, homePage, 721, 239, 69, 29, "测速")
@@ -161,6 +179,9 @@ func (u *desktopUI) setupControls() {
 	u.button(exportNode, nodesPage, 493, 346, 128, 39, "复制当前链接")
 	u.button(deleteNode, nodesPage, 651, 346, 139, 39, "删除选中节点")
 	u.button(manualAction, nodesPage, 223, 415, 140, 36, "手动添加 UDP")
+	u.button(openBench, nodesPage, 648, 415, 142, 36, "节点延迟测试")
+	u.input(benchEdit, benchPage, 230, 141, 563, 240, "EDIT", 0x200000|0x4|0x40|0x800)
+	u.button(runBench, benchPage, 646, 399, 147, 37, "重新测试")
 	u.input(logEdit, logsPage, 220, 102, 581, 320, "EDIT", 0x200000|0x4|0x40|0x800)
 	u.button(copyLog, logsPage, 672, 440, 129, 37, "复制诊断报告")
 	u.input(listenEdit, prefsPage, 223, 140, 369, 35, "EDIT", 0x80)
@@ -205,6 +226,8 @@ func (u *desktopUI) setPage(page int) {
 		uc("ShowWindow", c.h, cmd)
 	}
 	switch page {
+	case benchPage:
+		setText(u.controls[benchEdit].h, u.benchText)
 	case chainPage:
 		g := u.ctrl
 		g.mu.Lock()
@@ -373,6 +396,9 @@ func (u *desktopUI) refresh() {
 			u.nodeRows = key
 		}
 	}
+	if u.page == livePage {
+		u.refreshFlows()
+	}
 	if u.page == logsPage {
 		s := strings.Join(AppLogs.Snapshot(), "\r\n")
 		if s == "" {
@@ -406,6 +432,10 @@ func (u *desktopUI) finish() {
 	select {
 	case r := <-u.results:
 		u.busy = false
+		if r.benchText != "" {
+			u.benchText = r.benchText
+			setText(u.controls[benchEdit].h, r.benchText)
+		}
 		if r.originPage != 0 && r.originPage != u.page {
 			if r.err != nil {
 				log.Printf("[去广告] %v", r.err)
@@ -439,13 +469,33 @@ func (u *desktopUI) command(id int) {
 	}
 	// Local policy edits may proceed while an unrelated subscription downloads.
 	switch id {
-	case checkDomainAction, openDomainTools, saveChainAction, pauseAdsAction, addAllowedAction, saveAllowedAction:
+	case copyFlow, dropFlow, checkDomainAction, openDomainTools, saveChainAction, pauseAdsAction, addAllowedAction, saveAllowedAction:
 	default:
 		if u.busy {
 			return
 		}
 	}
 	switch id {
+	case copyFlow, dropFlow:
+		u.flowAction(id)
+	case openBench, runBench:
+		u.setPage(benchPage)
+		setText(u.controls[benchEdit].h, "正在测试已保存的节点…")
+		u.work(func() desktopResult {
+			results := g.BenchAllProfiles()
+			var lines []string
+			for _, r := range results {
+				status := "无应答"
+				if r.RTTMs >= 0 {
+					status = fmt.Sprintf("%d ms", r.RTTMs)
+				}
+				lines = append(lines, fmt.Sprintf("%s     %s     %s", status, r.Name, r.IP))
+			}
+			if len(lines) == 0 {
+				lines = []string{"尚未添加节点"}
+			}
+			return desktopResult{originPage: benchPage, benchText: strings.Join(lines, "\r\n"), message: "延迟测试完成"}
+		})
 	case openDomainTools:
 		u.setPage(domainPage)
 	case addAdSource:

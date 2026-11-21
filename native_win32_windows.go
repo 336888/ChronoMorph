@@ -278,6 +278,10 @@ func desktopWindowProc(hwnd uintptr, msg uint32, w, l uintptr) uintptr {
 			gc("SetBkColor", w, colorRef(editorBG))
 			return u.inputBrush
 		case 0x0111:
+			if int(w&65535) == flowList && w>>16 == 1 && u.page == livePage {
+				u.updateFlowDetail()
+				return 0
+			}
 			if l != 0 && w>>16 == 0 {
 				u.command(int(w & 65535))
 				return 0

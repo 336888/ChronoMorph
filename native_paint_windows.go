@@ -30,7 +30,7 @@ func (u *desktopUI) paint(dc uintptr) {
 	}
 	rounded(dc, u.rect(22, 510, 8, 8), u.px(4), dot, dot)
 	u.text(dc, 38, 498, 140, 31, 12, 500, muted, state)
-	title := map[int]string{homePage: "连接概览", nodesPage: "我的节点", logsPage: "连接日志", prefsPage: "设置", importPage: "导入节点", manualPage: "手动添加节点", chainPage: "链式代理", adsPage: "去广告", domainPage: "域名检查与放行"}[u.page]
+	title := map[int]string{homePage: "连接概览", livePage: "实时连接", benchPage: "节点延迟测试", nodesPage: "我的节点", logsPage: "连接日志", prefsPage: "设置", importPage: "导入节点", manualPage: "手动添加节点", chainPage: "链式代理", adsPage: "去广告", domainPage: "域名检查与放行"}[u.page]
 	u.text(dc, 212, 18, 435, 51, 29, 700, fg, title)
 	switch u.page {
 	case homePage:
@@ -64,6 +64,13 @@ func (u *desktopUI) paint(dc uintptr) {
 		u.line(dc, 232, 412, 794, 412, 1, edge)
 		u.text(dc, 233, 425, 395, 25, 17, 600, fg, "路由模式")
 		u.text(dc, 233, 451, 410, 21, 12, 400, muted, "选择智能分流或全局代理")
+	case livePage:
+		u.card(dc, 211, 90, 607, 397, panel)
+		u.text(dc, 230, 96, 205, 28, 14, 600, fg, "筛选目标、进程或协议")
+		u.text(dc, 230, 173, 565, 25, 13, 500, muted, u.flowStatus)
+	case benchPage:
+		u.card(dc, 211, 92, 607, 369, panel)
+		u.text(dc, 230, 104, 563, 30, 15, 600, fg, "节点往返延迟 · 按延迟排序，保留当前节点")
 	case nodesPage:
 		u.card(dc, 211, 92, 607, 384, panel)
 		u.text(dc, 229, 100, 500, 26, 14, 600, muted, fmt.Sprintf("已保存的节点  ·  %d", len(u.profiles)))
@@ -74,7 +81,7 @@ func (u *desktopUI) paint(dc uintptr) {
 		u.card(dc, 211, 92, 607, 398, panel)
 	case prefsPage:
 		u.card(dc, 211, 92, 607, 105, panel)
-		u.text(dc, 233, 102, 450, 31, 16, 600, fg, "本地 HTTP / SOCKS5 监听地址")
+		u.text(dc, 233, 102, 450, 31, 16, 600, fg, "本地 HTTP / SOCKS4 / SOCKS5 监听地址")
 		u.card(dc, 211, 211, 607, 148, panel)
 		u.text(dc, 233, 221, 385, 28, 17, 600, fg, "TUN 虚拟网卡")
 		u.text(dc, 233, 248, 440, 20, 12, 400, muted, "接管 IPv4，内置驱动，需要管理员权限")
@@ -135,7 +142,7 @@ func (u *desktopUI) paintButton(item *drawItem) {
 	nav := id >= navHome && id <= navPrefs
 	if nav {
 		fill, stroke, ink = side, side, muted
-		active := u.page == id-navHome+1 || (id == navAds && u.page == domainPage) || (id == navNodes && (u.page == manualPage || u.page == importPage))
+		active := u.page == id-navHome+1 || (id == navAds && u.page == domainPage) || (id == navNodes && (u.page == manualPage || u.page == importPage || u.page == benchPage))
 		if active {
 			fill, stroke, ink = 0x18343c, 0x23484b, mint
 		}
@@ -166,7 +173,7 @@ func (u *desktopUI) paintButton(item *drawItem) {
 	fillRect(dc, r, background)
 	rounded(dc, r, u.px(8), fill, stroke)
 	if nav {
-		symbols := []string{"◉", "◇", "⇄", "⊘", "≡", "⚙"}
+		symbols := []string{"◉", "↔", "◇", "⇄", "⊘", "≡", "⚙"}
 		a := r
 		a.left += int32(u.px(12))
 		a.right = a.left + int32(u.px(27))

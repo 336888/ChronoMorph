@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -96,7 +97,13 @@ func TestWindowsGUIProcess(t *testing.T) {
 	// A cached subscription with an offline origin reproduces a v1.4.3
 	// configuration. Saving a chain or correcting a domain must work offline.
 	src := "https://127.0.0.1:1/unreachable.txt"
-	if err := SaveConfigAtomic(filepath.Join(cmd.Dir, "client.json"), &Config{Listen: "127.0.0.1:0", AdSubscriptions: []string{src}}); err != nil {
+	reserve, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyAddr := reserve.Addr().String()
+	reserve.Close()
+	if err := SaveConfigAtomic(filepath.Join(cmd.Dir, "client.json"), &Config{Listen: proxyAddr, AdSubscriptions: []string{src}}); err != nil {
 		t.Fatal(err)
 	}
 	cacheDir := filepath.Join(cmd.Dir, "adblock-cache")
@@ -214,6 +221,71 @@ func TestWindowsGUIProcess(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// A separate application holds one real TCP connection across GUI refreshes.
+	echo, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer echo.Close()
+	go func() {
+		if c, e := echo.Accept(); e == nil {
+			defer c.Close()
+			_, _ = io.Copy(c, c)
+		}
+	}()
+	c, err := net.DialTimeout("tcp4", proxyAddr, 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(15 * time.Second))
+	port := echo.Addr().(*net.TCPAddr).Port
+	_, err = c.Write(append([]byte{4, 1, byte(port >> 8), byte(port), 127, 0, 0, 1, 0}, []byte("hello")...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply := make([]byte, 13)
+	if _, err = io.ReadFull(c, reply); err != nil || reply[1] != 90 || string(reply[8:]) != "hello" {
+		t.Fatalf("SOCKS4 echo: %x %v", reply, err)
+	}
+	click(navLive)
+	flows := uc("GetDlgItem", native, flowList)
+	wait("live TCP row did not appear", func() bool { return uc("SendMessageW", flows, 0x18b, 0, 0) == 1 })
+	setQuery := func(q string) {
+		p := utf(q)
+		uc("SendMessageW", uc("GetDlgItem", native, flowQuery), 0x000c, 0, uintptr(unsafe.Pointer(p)))
+		runtime.KeepAlive(p)
+	}
+	setQuery("never-matches.example")
+	wait("filter left wrong row", func() bool { return uc("SendMessageW", flows, 0x18b, 0, 0) == 0 })
+	setQuery(fmt.Sprintf("(%d)", os.Getpid()))
+	wait("could not filter by calling process", func() bool { return uc("SendMessageW", flows, 0x18b, 0, 0) == 1 })
+	uc("SendMessageW", flows, 0x186, 0, 0)
+	detail := uc("GetDlgItem", native, flowDetail)
+	wait("native byte counts or target incorrect", func() bool {
+		s := controlText(detail)
+		return strings.Count(s, "5 B") == 2 && strings.Contains(s, echo.Addr().String())
+	})
+	setQuery("")
+	if path := os.Getenv("CHRONOMORPH_LIVE_PREVIEW"); path != "" {
+		if err := captureDesktopWindow(native, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	click(dropFlow)
+	if _, err := c.Read(reply[:1]); err == nil {
+		t.Fatal("disconnected socket still usable")
+	}
+	wait("closed connection remained visible", func() bool { return uc("SendMessageW", flows, 0x18b, 0, 0) == 0 })
+	t.Log("Live TCP process filtering, destination, counters, specific disconnect and row removal verified")
+	click(navNodes)
+	click(openBench)
+	benchField := uc("GetDlgItem", native, benchEdit)
+	wait("batch latency results missing", func() bool {
+		s := controlText(benchField)
+		return strings.Contains(s, "本机测试节点") && strings.Contains(s, " ms")
+	})
+	click(navHome)
 	click(toggleAction)
 	wait("native stop did not release the listener", func() bool { return controlText(toggle) == "启动连接" })
 	t.Log("Native dual node import, start, authenticated ping and stop verified")

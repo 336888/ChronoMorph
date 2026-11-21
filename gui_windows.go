@@ -24,6 +24,7 @@ type GUIController struct {
 	cm         *ClientMux
 	probes     map[*ClientMux]struct{}
 	ln         net.Listener
+	clients    map[net.Conn]struct{}
 	router     *Router
 	running    bool
 	sysProxyOn bool
@@ -74,13 +75,22 @@ func (g *GUIController) startTunnelLocked(cfg *Config, save bool) error {
 			}
 			g.mu.Lock()
 			active := g.cm
-			listener := g.ln
-			g.mu.Unlock()
-			if active == nil || listener != ln {
+			if active == nil || g.ln != ln {
+				g.mu.Unlock()
 				_ = c.Close()
 				continue
 			}
-			go handleMixedProxy(c, active, g.router)
+			if g.clients == nil {
+				g.clients = make(map[net.Conn]struct{})
+			}
+			g.clients[c] = struct{}{}
+			g.mu.Unlock()
+			go func() {
+				handleMixedProxy(c, active, g.router)
+				g.mu.Lock()
+				delete(g.clients, c)
+				g.mu.Unlock()
+			}()
 		}
 	}()
 	log.Printf("[GUI] 加密隧道已启动，监听 %s", listen)
@@ -106,6 +116,10 @@ func (g *GUIController) stopTunnelLocked() error {
 	if g.ln != nil {
 		_ = g.ln.Close()
 		g.ln = nil
+	}
+	for c := range g.clients {
+		_ = c.Close()
+		delete(g.clients, c)
 	}
 	if g.cm != nil {
 		g.cm.Close()
@@ -184,6 +198,7 @@ func RunWindowsGUI(cfgPath string) {
 		router:  cfg.newRouter(),
 	}
 
+	ctrl.router.live = &flowMonitor{}
 	stopCh := make(chan struct{})
 	ctrl.startSubscriptions(stopCh)
 	ctrl.StartTunnelWatchdog(stopCh)
