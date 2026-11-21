@@ -1,14 +1,12 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
-	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -67,9 +65,9 @@ var navigation = []struct {
 	id, page    int
 	label, icon string
 }{
-	{navHome, homePage, "连接概览", "◉"}, {navLive, livePage, "实时连接", "↔"}, {navNodes, nodesPage, "我的节点", "◇"},
+	{navHome, homePage, "加速器", "◉"}, {navLive, livePage, "实时连接", "↔"}, {navNodes, nodesPage, "我的节点", "◇"},
 	{navChain, chainPage, "链式代理", "⇄"}, {navAds, adsPage, "去广告", "⊘"}, {navRoutes, routesPage, "分流规则", "⑂"},
-	{navModes, modesPage, "进程模式", "▦"}, {navLogs, logsPage, "连接日志", "≡"}, {navPrefs, prefsPage, "设置", "⚙"},
+	{navResources, resourcesPage, "资源", "▤"}, {navModes, modesPage, "进程模式", "▦"}, {navLogs, logsPage, "连接日志", "≡"}, {navPrefs, prefsPage, "设置", "⚙"},
 }
 
 func navItem(id int) (page int, icon string) {
@@ -85,6 +83,8 @@ func (u *desktopUI) navActive(page int) bool {
 		return true
 	}
 	switch u.page {
+	case resourceEditorPage:
+		return page == resourcesPage
 	case domainPage:
 		return page == adsPage
 	case manualPage, importPage, benchPage:
@@ -363,35 +363,19 @@ func (u *desktopUI) ruleCommand(id int) bool {
 		u.setField(routeFeedsEdit, mergeRuleLines(u.field(routeFeedsEdit), []string{"DIRECT " + appleRouteURL}))
 	case routeSave, routeLocalSave:
 		refresh := id == routeSave
-		s := RouteSettings{Manual: u.field(routeManual), Sources: u.field(routeFeedsEdit)}
+		manual, sources := u.field(routeManual), u.field(routeFeedsEdit)
 		u.work(func() desktopResult {
 			g.mu.Lock()
-			previous := g.cfg.Routing
+			s := g.cfg.Routing
 			g.mu.Unlock()
-			if !refresh {
-				if strings.TrimSpace(previous.Sources) != strings.TrimSpace(s.Sources) {
-					return desktopResult{originPage: routesPage, err: fmt.Errorf("订阅地址已更改，请点「保存并更新规则」")}
-				}
-				s.Cache = previous.Cache
-				s.GeoFiles = previous.GeoFiles
+			if !refresh && strings.TrimSpace(s.Sources) != strings.TrimSpace(sources) {
+				return desktopResult{originPage: routesPage, err: fmt.Errorf("订阅地址已更改，请点「保存并更新规则」")}
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
-			defer cancel()
-			idx, hash, e := buildRouting(ctx, g.cfgPath, s, refresh, routeHTTPClient())
+			s.Manual, s.Sources = manual, sources
+			idx, e := g.applyRouting(s, refresh, nil)
 			count := 0
-			if e == nil {
-				s.Cache = hash
-				s.GeoFiles = idx.geo.files
-				g.mu.Lock()
-				cfg := *g.cfg
-				cfg.Routing = s
-				e = g.installConfigLocked(&cfg, nil)
-				if e == nil {
-					g.router.routes.Store(idx)
-					g.routeLoadErr = nil
-					count = idx.count
-				}
-				g.mu.Unlock()
+			if idx != nil {
+				count = idx.count
 			}
 			msg := fmt.Sprintf("已应用 %d 条分流规则", count)
 			if idx != nil && len(idx.geo.files) > 0 {

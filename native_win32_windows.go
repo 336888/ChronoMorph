@@ -202,8 +202,8 @@ func (u *desktopUI) run(ready chan<- error) {
 		ready <- fmt.Errorf("无法创建桌面窗口")
 		return
 	}
-	// Use a light title bar and native rounded corners when DWM supports them.
-	dark := int32(0)
+	// Use a dark title bar and native rounded corners when DWM supports them.
+	dark := int32(1)
 	corner := int32(2)
 	dwm := windows.NewLazySystemDLL("dwmapi.dll").NewProc("DwmSetWindowAttribute")
 	if dwm.Find() == nil {
@@ -282,7 +282,7 @@ func desktopWindowProc(hwnd uintptr, msg uint32, w, l uintptr) uintptr {
 					ink = mint
 				}
 				if u.isError {
-					ink = 0xb1242e
+					ink = 0xffa2a2
 				}
 				gc("SetTextColor", w, colorRef(ink))
 				gc("SetBkColor", w, colorRef(bg))

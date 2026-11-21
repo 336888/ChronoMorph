@@ -23,10 +23,11 @@ import (
 const appleRouteURL = "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/Apple/Apple_All_No_Resolve.list"
 
 type RouteSettings struct {
-	GeoFiles map[string]string `json:"geo_files,omitempty"`
-	Manual   string            `json:"manual,omitempty"`
-	Sources  string            `json:"sources,omitempty"`
-	Cache    string            `json:"snapshot,omitempty"`
+	Resources map[string]GeoResource `json:"resources,omitempty"`
+	GeoFiles  map[string]string      `json:"geo_files,omitempty"`
+	Manual    string                 `json:"manual,omitempty"`
+	Sources   string                 `json:"sources,omitempty"`
+	Cache     string                 `json:"snapshot,omitempty"`
 }
 type routeHit struct {
 	order        int
@@ -36,7 +37,11 @@ type keywordRoute struct {
 	term string
 	hit  routeHit
 }
+
+var errMissingRouteData = errors.New("缺少分流缓存")
+
 type routeIndex struct {
+	missing        error
 	exact, suffix  map[string]routeHit
 	prefix         map[netip.Prefix]routeHit
 	keywords       []keywordRoute
@@ -176,7 +181,7 @@ func (r *routeIndex) match(target string) (hit routeHit) {
 		if hit.order != 0 && site.hit.order >= hit.order {
 			break
 		}
-		if site.matcher != nil && site.matcher.MatchAny(host) {
+		if site.matches(host) {
 			take(site.hit)
 			break
 		}
@@ -229,13 +234,41 @@ func (w *routeSnapshots) add(raw []byte, suffix string) string {
 	return sum
 }
 func buildRouting(ctx context.Context, path string, s RouteSettings, refresh bool, client *http.Client) (*routeIndex, string, error) {
+	return buildResourceRouting(ctx, path, s, refresh, nil, client)
+}
+
+func buildResourceRouting(ctx context.Context, path string, s RouteSettings, refresh bool, selected []string, client *http.Client) (*routeIndex, string, error) {
 	var pending routeSnapshots
-	r, hash, err := buildRuleIndex(ctx, path, s, refresh, client, &pending)
+	r, hash, err := buildRuleIndex(ctx, path, s, refresh && selected == nil, client, &pending)
 	if err != nil {
+		if selected == nil || !errors.Is(err, errMissingRouteData) && !errors.Is(err, os.ErrNotExist) {
+			return nil, "", err
+		}
+		// A missing text subscription must not prevent an independent resource download.
+		r = newRouteIndex()
+		r.missing = err
+		hash = s.Cache
+		if err = r.add(s.Manual, "本地规则", ""); err != nil {
+			return nil, "", err
+		}
+	}
+	for _, name := range selected {
+		r.geo.require(name)
+	}
+	for _, name := range geoFilenames {
+		res := s.Resources[name]
+		if _, err = res.source(name); err != nil {
+			return nil, "", err
+		}
+		if err = r.geo.overrides.parse(name, res.Overrides); err != nil {
+			return nil, "", err
+		}
+	}
+	if err = r.geo.load(ctx, path, s, refresh, selected, client, &pending); err != nil {
 		return nil, "", err
 	}
-	if err = r.geo.load(ctx, path, s.GeoFiles, refresh, client, &pending); err != nil {
-		return nil, "", err
+	if r.geo.missing != nil {
+		r.missing = r.geo.missing
 	}
 	if err = writeRuleCache(path, routingCache, pending); err != nil {
 		return nil, "", err
@@ -267,7 +300,7 @@ func buildRuleIndex(ctx context.Context, path string, s RouteSettings, refresh b
 	if !refresh {
 		b, e := hex.DecodeString(s.Cache)
 		if e != nil || len(b) != 32 {
-			return nil, "", errors.New("缺少分流订阅缓存，请更新规则")
+			return nil, "", fmt.Errorf("%w，请更新文本订阅", errMissingRouteData)
 		}
 		item, e := readRuleCache(path, routingCache, s.Cache+".txt", 16<<20)
 		if e != nil {
@@ -349,7 +382,7 @@ func routingCommand(path string, update bool, target string) error {
 		return err
 	}
 	if update {
-		s.Cache, s.GeoFiles = hash, idx.geo.files
+		s = s.withIndex(idx, hash)
 		if doc["routing"], err = json.Marshal(s); err != nil {
 			return err
 		}

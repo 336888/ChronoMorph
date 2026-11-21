@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/netip"
+	"os"
 	"strconv"
 	"strings"
 
@@ -24,12 +26,16 @@ const geoASNFile = "GeoLite2-ASN.mmdb"
 var geoFilenames = [...]string{geoSiteFile, geoIPFile, geoASNFile}
 
 type siteRoute struct {
+	edits    map[string]bool
 	selector string
 	hit      routeHit
 	matcher  geodata.DomainMatcher
 }
 
 type geoRoutes struct {
+	missing          error
+	overrides        geoOverrides
+	downloaded       []string
 	files            map[string]string
 	sites            []siteRoute
 	siteSelectors    map[string]bool
@@ -102,7 +108,9 @@ func (g *geoRoutes) add(kind, value string, hit routeHit) error {
 }
 
 func (g *geoRoutes) matchIP(ip netip.Addr, take func(routeHit)) {
-	if g.countryDB != nil && len(g.countries) > 0 {
+	if override, found := prefixOverride(g.overrides.countries, ip); found {
+		take(g.countries[override])
+	} else if g.countryDB != nil && len(g.countries) > 0 {
 		var codes any
 		if g.countryDB.Lookup(ip).Decode(&codes) == nil {
 			switch v := codes.(type) {
@@ -117,7 +125,9 @@ func (g *geoRoutes) matchIP(ip netip.Addr, take func(routeHit)) {
 			}
 		}
 	}
-	if g.asnDB != nil && len(g.asns) > 0 {
+	if override, found := prefixOverride(g.overrides.asns, ip); found {
+		take(g.asns[override])
+	} else if g.asnDB != nil && len(g.asns) > 0 {
 		var asn uint32
 		if g.asnDB.Lookup(ip).DecodePath(&asn, "autonomous_system_number") == nil {
 			take(g.asns[asn])
@@ -139,6 +149,7 @@ func (g *geoRoutes) loadSites(data []byte) error {
 	}
 	var factory geodata.MphDomainMatcherFactory
 	for i, rule := range g.sites {
+		g.sites[i].edits = g.overrides.sites[rule.selector]
 		key := rule.selector
 		var attrs []string
 		if groups[key] == nil {
@@ -147,6 +158,9 @@ func (g *geoRoutes) loadSites(data []byte) error {
 		}
 		group := groups[key]
 		if group == nil {
+			if len(g.sites[i].edits) > 0 {
+				continue
+			}
 			return fmt.Errorf("找不到 GeoSite 分类 %q", key)
 		}
 		var rules []*geodata.DomainRule
@@ -157,6 +171,9 @@ func (g *geoRoutes) loadSites(data []byte) error {
 			rules = append(rules, &geodata.DomainRule{Value: &geodata.DomainRule_Custom{Custom: domain}})
 		}
 		if len(rules) == 0 {
+			if len(g.sites[i].edits) > 0 {
+				continue
+			}
 			return fmt.Errorf("GeoSite 分类 %q 没有匹配条目", rule.selector)
 		}
 		m, err := factory.BuildMatcher(rules)
@@ -255,17 +272,23 @@ func verifyMetaCountries(db *mmdb.Reader) error {
 	return nil
 }
 
-func (g *geoRoutes) load(ctx context.Context, path string, cached map[string]string, refresh bool, client *http.Client, pending *routeSnapshots) error {
+func (g *geoRoutes) load(ctx context.Context, path string, settings RouteSettings, refresh bool, selected []string, client *http.Client, pending *routeSnapshots) error {
 	for _, name := range geoFilenames {
 		if _, ok := g.files[name]; !ok {
 			continue
 		}
-		digest := cached[name]
+		resource := settings.Resources[name]
+		source, err := resource.source(name)
+		if err != nil {
+			return err
+		}
+		fetch := refresh && selectedResource(selected, name)
+		digest := settings.GeoFiles[name]
 		const maxBytes = 64 << 20
 		var item cachedRule
 		var data []byte
-		if refresh {
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, geoRelease+name, nil)
+		if fetch {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
 			if err != nil {
 				return err
 			}
@@ -283,24 +306,32 @@ func (g *geoRoutes) load(ctx context.Context, path string, cached map[string]str
 				return fmt.Errorf("%s 读取失败或超过 64 MiB", name)
 			}
 		} else {
-			sum, err := hex.DecodeString(digest)
-			if err != nil || len(sum) != sha256.Size {
-				return fmt.Errorf("%s 缺少缓存，请保存并更新规则", name)
+			sum, cacheErr := hex.DecodeString(digest)
+			if cacheErr != nil || len(sum) != sha256.Size {
+				cacheErr = errMissingRouteData
+			} else {
+				item, cacheErr = readRuleCache(path, routingCache, digest+"-"+name, maxBytes)
 			}
-			item, err = readRuleCache(path, routingCache, digest+"-"+name, maxBytes)
-			if err != nil {
-				return fmt.Errorf("%s 缓存不可读: %w", name, err)
+			if cacheErr != nil {
+				failure := fmt.Errorf("%s 缓存不可用，请同步资源: %w", name, cacheErr)
+				if selected == nil || !errors.Is(cacheErr, errMissingRouteData) && !errors.Is(cacheErr, os.ErrNotExist) {
+					return failure
+				}
+				g.missing = failure
+				delete(g.files, name)
+				continue
 			}
 			data = item.data
 		}
-		if !refresh && fmt.Sprintf("%x", sha256.Sum256(data)) != digest {
+		if !fetch && fmt.Sprintf("%x", sha256.Sum256(data)) != digest {
 			return fmt.Errorf("%s 缓存校验失败", name)
 		}
-		if err := g.decode(name, data, refresh); err != nil {
+		if err := g.decode(name, data, fetch); err != nil {
 			return fmt.Errorf("%s: %w", name, err)
 		}
-		if refresh {
+		if fetch {
 			digest = pending.add(data, "-"+name)
+			g.downloaded = append(g.downloaded, name)
 		}
 		if item.legacy {
 			*pending = append(*pending, item)

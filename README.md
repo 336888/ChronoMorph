@@ -20,6 +20,8 @@ sudo bash ./cm.sh --install
 
 Slacker 沿用 ChronoMorph 的节点链接、客户端配置和 Debian 服务目录。Windows 升级时先从托盘退出旧版，将新版 EXE 放在原客户端目录，保留 `client.json`。
 
+- **加速器**首页可选择线路、启动或停止连接、测量节点延迟，并查看当前连接的收发速率和最近的速率曲线。
+- **资源**列出 geosite.dat、geoip.metadb 和 GeoLite2-ASN.mmdb。可单独同步或同步全部。「编辑」可修改 HTTPS 下载地址和本地修订。同步后显示时间和版本摘要，已有缓存可供离线使用。
 - **去广告**管理域名订阅、暂停过滤、查询命中规则和维护放行名单。可直接添加 217heidai 订阅。
 - **分流规则**支持本地规则和 blackmatrix7 的 Surge 文本订阅。每行本地规则写作 `DOMAIN-SUFFIX,example.com,DIRECT`。可用动作是 DIRECT、PROXY、REJECT，支持 DOMAIN、DOMAIN-SUFFIX、DOMAIN-KEYWORD、IP-CIDR、IP-CIDR6、GEOSITE、GEOIP 和 IP-ASN。每行订阅写作 `DIRECT https://…/xxx.list`。本地规则优先，首条命中生效。保存并更新后可测试域名或 IP。更新失败保留已有规则，重启可从缓存载入。
 - **进程模式**可以分别创建进程规则与 IP 路由表。填写备注和文件名，输入或扫描 EXE，或选择某个目录。两侧列表分别指定接管与直连，直连例外优先。点击「验证」和「保存模式」，再选中并点击「使用选中模式」。重新开启 TUN 后生效。回环选项处理已接入本地 HTTP/SOCKS 代理的 TCP 请求，Windows 原生本机回环不经过 Wintun。
@@ -31,6 +33,8 @@ Slacker 沿用 ChronoMorph 的节点链接、客户端配置和 Debian 服务目
 | `GEOSITE,cn,DIRECT` | 目标域名属于 geosite.dat 的 cn 分类 | 直连 |
 | `GEOIP,cn,DIRECT` | 目标 IPv4 或 IPv6 地址在 geoip.metadb 中带 cn 标签 | 直连 |
 | `IP-ASN,13335,PROXY` | 目标 IP 在 GeoLite2-ASN.mmdb 中属于 AS13335 | 代理 |
+
+在「资源 → 编辑」中每行填写一条修订。GeoSite 使用 `cn,example.com` 将域名及其子域加入分类，`cn,!example.com` 将其排除。GeoIP 使用 `203.0.113.0/24,cn` 修改地区，ASN 使用 `203.0.113.1,64512` 修改归属。IP 和 CIDR 均支持 IPv4、IPv6，值填 `-` 可移除该范围的数据库归属。更具体的子域或前缀优先，删除修订行即可恢复上游结果。保存后立即应用到新匹配，下次同步保留修订。更改地址后点「同步」下载新来源。
 
 精确域名例外请放在分类规则上方。GeoSite 支持带属性的分类（如 `组名@属性`）。IP 规则只匹配已知的目标地址，域名匹配不会触发额外 DNS 查询。也可把这三个文件的 MetaCubeX 官方 latest 下载链接逐行粘贴到订阅框，单独的数据库链接仅加载数据，流量动作由规则决定。
 
