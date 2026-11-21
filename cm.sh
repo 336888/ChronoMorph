@@ -282,6 +282,39 @@ activate_package() (
     mv -fT -- "$work/cm.sh" "$MGR_PATH" || exit 1
 )
 
+# Keep the unified tuner in charge of its shared settings during service upgrades.
+# Optional paths let the shell regression test use an isolated filesystem.
+configure_server_network() {
+    local conf=${1:-/etc/sysctl.d/99-chronomorph.conf}
+    local tune=${2:-/etc/sysctl.d/99-slacker-tune.conf} first_line='' unified=0
+    if [[ -f "$tune" && ! -L "$tune" ]]; then
+        IFS= read -r first_line < "$tune" || true
+        [[ $first_line != '# Managed by slacker-tune.sh.' ]] || unified=1
+    fi
+    cat > "$conf" <<'EOF' || return 1
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+net.netfilter.nf_conntrack_max = 131072
+net.netfilter.nf_conntrack_udp_timeout = 15
+net.netfilter.nf_conntrack_udp_timeout_stream = 45
+EOF
+    if (( unified )); then
+        local setting failed=0
+        # Keep the service defaults for boot/restore, but only apply its own keys.
+        # The later 99-slacker-tune.conf takes precedence during sysctl.d loading.
+        for setting in net.netfilter.nf_conntrack_max=131072 \
+                       net.netfilter.nf_conntrack_udp_timeout=15 \
+                       net.netfilter.nf_conntrack_udp_timeout_stream=45; do
+            sysctl -w "$setting" >/dev/null || failed=1
+        done
+        if (( failed )); then echo "部分可选内核参数未生效" >&2; fi
+    else
+        sysctl -e -p "$conf" >/dev/null || echo "部分可选内核参数未生效" >&2
+    fi
+}
+
 do_install() (
     set -e
     export DEBIAN_FRONTEND=noninteractive
@@ -316,16 +349,7 @@ do_install() (
     [[ $listen =~ ^[0-9]{1,5}$ ]] && ((10#$listen >= 1 && 10#$listen <= 65535)) || { echo "服务端配置的监听端口无效" >&2; exit 1; }
     LISTEN_PORT=$((10#$listen))
     systemctl enable --now chrony
-    cat > /etc/sysctl.d/99-chronomorph.conf <<EOF
-net.core.default_qdisc = fq
-net.ipv4.tcp_congestion_control = bbr
-net.core.rmem_max = 16777216
-net.core.wmem_max = 16777216
-net.netfilter.nf_conntrack_max = 131072
-net.netfilter.nf_conntrack_udp_timeout = 15
-net.netfilter.nf_conntrack_udp_timeout_stream = 45
-EOF
-    sysctl -e -p /etc/sysctl.d/99-chronomorph.conf >/dev/null || echo "部分可选内核参数未生效" >&2
+    configure_server_network
     mkdir -p /etc/nftables.d
     cat > "$NFT_FILE" <<EOF
 table inet chronomorph {

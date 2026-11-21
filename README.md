@@ -4,7 +4,15 @@ Slacker 提供 TLS 1.3/TCP 和 UDP 两种传输。两者都支持本地 HTTP、S
 
 ## Debian 一键安装或升级
 
-下载 Release 附件 [cm.sh](https://github.com/336888/Slacker/releases/latest/download/cm.sh)，在文件所在目录执行：
+Debian 服务端一键安装或升级（安装最新正式 Release）：
+
+```bash
+curl -fL --retry 3 -o slacker-install.sh https://github.com/336888/Slacker/releases/latest/download/cm.sh && sudo bash ./slacker-install.sh --install
+```
+
+安装完成后运行 `sudo cm` 打开管理菜单，选 **4** 导出节点链接，选 **12** 配置 REALITY 入口。首次使用需要系统已安装 `curl` 和 CA 证书；Root 登录时可省略 `sudo`。
+
+也可以手动下载 Release 附件 [cm.sh](https://github.com/336888/Slacker/releases/latest/download/cm.sh)，在文件所在目录执行：
 
 ```bash
 sudo bash ./cm.sh --install
@@ -13,6 +21,62 @@ sudo bash ./cm.sh --install
 脚本识别 AMD64 或 ARM64，下载相应的完整包，校验归档和文件，再安装主程序、REALITY 组件和 `cm` 管理菜单。在线安装需要访问 GitHub。私有仓库首次下载脚本需登录 GitHub。此公开仓库可匿名下载。如果当前账号已登录 GitHub CLI，脚本也会使用它的凭据。非交互安装支持 `GH_TOKEN` 或 `GITHUB_TOKEN`，使用 sudo 时需让安装进程取得该环境变量。
 
 完成本次更新后，后续直接运行 `sudo cm --install`，或在 `sudo cm` 菜单选 **1**。升级会短暂重启服务，并检查已启用的入口。脚本沿用已有用户和节点密钥；新版服务验证失败时恢复上个版本。离线安装可解压同版本的 Debian 完整包，从包内运行同一条命令，系统依赖仍通过 apt 安装。
+
+## BBR 与内核网络调优
+
+BBR 和内核调优现统一为 [slacker-tune.sh](slacker-tune.sh)。原来的 `slacker-bbr.sh`、`slacker-network-tune.sh` 已移除，请使用新入口。调优脚本直接取自仓库 `main`，独立于服务端的正式 Release。
+
+### 一键安装统一调优
+
+```bash
+curl -fL --retry 3 -o slacker-tune.sh https://raw.githubusercontent.com/336888/Slacker/main/slacker-tune.sh && sudo bash ./slacker-tune.sh install
+```
+
+适用于使用 Bash、procps `sysctl` 和 util-linux `flock` 的 Debian / Ubuntu Linux。脚本尝试加载系统现有的 `tcp_bbr`、`sch_fq` 模块；内核不支持 BBR，或必需参数不可读取时，会停止安装。脚本不会安装新内核。
+
+| 项目 | 统一版行为 |
+| --- | --- |
+| TCP 拥塞控制 | BBR |
+| 默认队列调度 | `fq`，同时报告网卡实际队列 |
+| Socket / TCP 缓冲上限 | 内存不足 1 GiB 时以 8 MiB 为目标，1–4 GiB 为 16 MiB，4 GiB 及以上为 32 MiB；已有更高值继续保留 |
+| TCP 初始缓冲 | 保留 `tcp_rmem` / `tcp_wmem` 的前两项，只调整最大值；启用接收缓冲自动调整 |
+| 监听队列上限 | `somaxconn` 至少 4096，`tcp_max_syn_backlog` 至少 8192；保留已有更高值 |
+| SYN 溢出保护 | 开启 `tcp_syncookies`，保留已有更强模式 |
+| MTU 黑洞探测 | `tcp_mtu_probing` 至少为 1，保留已有模式 2 |
+| 持久化 | `/etc/sysctl.d/99-slacker-tune.conf` 与 `/etc/modules-load.d/slacker-tune.conf` |
+| 原状态备份 | `/var/lib/slacker-tune`，只有第一次成功建立快照时保存基线 |
+
+这些缓冲数字是上限目标，不会预先为每条连接分配相同内存。新安装沿用现有 TCP 关闭计时、keepalive、网卡收包积压和 UDP 最低内存设置。它们并非通用提速开关；其中现代内核的 `udp_wmem_min` 已无实际作用。参数含义见 [Linux TCP / UDP 官方文档](https://docs.kernel.org/networking/ip-sysctl.html)及[网络核心参数文档](https://docs.kernel.org/admin-guide/sysctl/net.html)。
+
+BBR 控制本机 TCP 发送方，普通 UDP / KCP 不会因此改用 BBR。现存连接及监听 socket 可能继续使用原拥塞算法；新默认 `fq` 也不会自动替换已挂载的网卡队列。安装后应通过状态命令核对，按实际需要安排服务重启或网卡维护。脚本本身不会重启网络或 Slacker。
+
+### 查看状态与恢复
+
+保留下载的脚本，在同一目录执行：
+
+```bash
+sudo bash ./slacker-tune.sh status
+sudo bash ./slacker-tune.sh restore
+```
+
+`status` 只读取状态，不创建配置或备份。`install` 重复执行会核对保存的配置及运行值；完全一致时直接返回，不覆盖首次备份。若安装后有人改过受管设置，会提示先恢复，再重新安装。
+
+`restore` 恢复**首次安装统一版之前**的运行参数和受管配置文件，覆盖这些文件在安装后的修改。它不会推测“所有历史调优之前”的系统默认值。快照会用 SHA-256 校验完整性；校验失败时不执行恢复。恢复失败会返回错误并保留备份，可以在解决错误后重试。
+
+### 从两个旧脚本迁移
+
+已安装旧版时，直接执行统一版的安装命令即可。脚本会校验原来两份配置的有效键和值，完整备份后应用统一配置；只有新参数应用并读回验证成功，才移除旧的 `99-slacker-bbr.conf` 和 `98-slacker-network.conf`。旧网络脚本已启用的 keepalive 等附加设置会按当前值并入新配置，以保持迁移前行为。
+
+如果旧配置被手动增加或修改过，迁移会停止并指出文件，供管理员先保留和核对。旧备份目录 `/var/lib/slacker-bbr`、`/var/lib/slacker-network` 不会被删除。对迁移安装运行 `restore`，会恢复迁移前的两份旧配置及其运行参数。
+
+仓库中的新版 `cm.sh` 已识别统一调优配置：升级服务端时，只应用服务自己的 conntrack 参数，保留统一版管理的拥塞算法和缓冲设置。正式 Release 的安装命令以 Release 附件为准；在包含此修改的 Release 发布前，旧版 `cm` 升级仍可能重设共享参数，升级后请用 `status` 核对。
+
+维护者可运行隔离回归测试（模拟 sysctl，不修改宿主机网络）：
+
+```bash
+python3 tests/tune.py
+bash tests/tune-installer-compat.sh
+```
 
 ## Windows 客户端
 

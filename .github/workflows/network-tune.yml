@@ -1,0 +1,34 @@
+name: Network tuning scripts
+
+on:
+  push:
+    paths:
+      - 'slacker-tune.sh'
+      - 'cm.sh'
+      - 'tests/tune.py'
+      - 'tests/tune-installer-compat.sh'
+      - '.github/workflows/network-tune.yml'
+  pull_request:
+    paths:
+      - 'slacker-tune.sh'
+      - 'cm.sh'
+      - 'tests/tune.py'
+      - 'tests/tune-installer-compat.sh'
+      - '.github/workflows/network-tune.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shell-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bash syntax
+        run: bash -n slacker-tune.sh cm.sh tests/tune-installer-compat.sh
+      - name: Isolated installer and rollback tests
+        run: python3 tests/tune.py
+      - name: Service installer compatibility
+        run: bash tests/tune-installer-compat.sh
