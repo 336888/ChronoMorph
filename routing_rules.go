@@ -19,7 +19,7 @@ import (
 	"time"
 )
 
-const appleRouteURL = "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/Apple/Apple.list"
+const appleRouteURL = "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/Apple/Apple_All_No_Resolve.list"
 
 type RouteSettings struct {
 	Manual  string `json:"manual,omitempty"`
@@ -61,6 +61,15 @@ func (r *routeIndex) parse(text, source, action string, cache *bytes.Buffer) err
 			p[i] = strings.TrimSpace(p[i])
 		}
 		errLine := func(msg string) error { return fmt.Errorf("%s 第 %d 行：%s", source, row, msg) }
+		if len(p) == 1 && action != "" {
+			domain := p[0]
+			kind := "DOMAIN"
+			if strings.HasPrefix(domain, ".") {
+				domain = strings.TrimPrefix(domain, ".")
+				kind = "DOMAIN-SUFFIX"
+			}
+			p = []string{kind, domain}
+		}
 		if len(p) < 2 {
 			return errLine("需要规则类型和匹配值")
 		}

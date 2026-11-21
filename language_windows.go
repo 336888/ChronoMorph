@@ -3,7 +3,8 @@ package main
 import "golang.org/x/sys/windows"
 
 var englishLabels = map[string]string{
-	"分流规则": "Routing rules", "编辑模式": "Edit mode", "协议选项": "Protocols", "选择目录": "Choose folder", "扫描 EXE": "Scan EXEs", "处理本地回环": "Loopback", "处理局域网": "Local network", "返回规则编辑": "Back to rules",
+	"保存本地规则": "Save local rules",
+	"分流规则":   "Routing rules", "编辑模式": "Edit mode", "协议选项": "Protocols", "选择目录": "Choose folder", "扫描 EXE": "Scan EXEs", "处理本地回环": "Loopback", "处理局域网": "Local network", "返回规则编辑": "Back to rules",
 	"新建进程模式": "New process mode", "新建 IP 路由表": "New IP route table", "使用选中模式": "Use selected", "删除模式": "Delete mode", "保存模式": "Save mode", "验证": "Validate", "使用常规网络设置": "Use default network settings",
 	"添加 Apple 直连订阅": "Add Apple direct rules", "保存并更新规则": "Save and update", "测试规则匹配": "Test match", "本地规则 · 类型,匹配值,DIRECT / PROXY / REJECT": "Local rules · type, value, DIRECT / PROXY / REJECT",
 	"订阅 · 每行填写动作、空格和 HTTPS 规则直链": "Subscriptions · one action and HTTPS URL per line", "备注": "Name", "文件名": "File name", "处理规则 · 代理": "Include · proxy", "分流规则 · 直连优先": "Exclude · direct first", "创建模式": "Create a mode", "选择已保存的模式": "Select a saved mode",

@@ -59,6 +59,7 @@ const (
 	modeLoop
 	modeUpstream
 	modeDelay
+	routeLocalSave
 )
 
 var navigation = []struct {
@@ -126,6 +127,7 @@ func (u *desktopUI) setupRuleControls() {
 	}
 	u.input(routeTarget, routesPage, 231, 425, 399, 32, "EDIT", 0x80)
 	u.button(routePreset, routesPage, 231, 348, 209, 34, "添加 Apple 直连订阅")
+	u.button(routeLocalSave, routesPage, 453, 348, 156, 34, "保存本地规则")
 	u.button(routeSave, routesPage, 624, 348, 172, 34, "保存并更新规则")
 	u.button(routeTest, routesPage, 644, 424, 152, 34, "测试规则匹配")
 	u.input(modePick, modesPage, 231, 155, 565, 210, "COMBOBOX", 0x3|0x200000)
@@ -326,7 +328,7 @@ func chooseModeDir(hwnd uintptr) (string, error) {
 	return windows.UTF16ToString(path[:]), nil
 }
 func (u *desktopUI) ruleCommand(id int) bool {
-	if id < navRoutes || id > modeDelay {
+	if id < navRoutes || id > routeLocalSave {
 		return false
 	}
 	g := u.ctrl
@@ -341,12 +343,22 @@ func (u *desktopUI) ruleCommand(id int) bool {
 	switch id {
 	case routePreset:
 		u.setField(routeFeedsEdit, mergeRuleLines(u.field(routeFeedsEdit), []string{"DIRECT " + appleRouteURL}))
-	case routeSave:
+	case routeSave, routeLocalSave:
+		refresh := id == routeSave
 		s := RouteSettings{Manual: u.field(routeManual), Sources: u.field(routeFeedsEdit)}
 		u.work(func() desktopResult {
+			g.mu.Lock()
+			previous := g.cfg.Routing
+			g.mu.Unlock()
+			if !refresh {
+				if strings.TrimSpace(previous.Sources) != strings.TrimSpace(s.Sources) {
+					return desktopResult{originPage: routesPage, err: fmt.Errorf("订阅地址已更改，请点「保存并更新规则」")}
+				}
+				s.Cache = previous.Cache
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 			defer cancel()
-			idx, hash, e := buildRouting(ctx, g.cfgPath, s, true, routeHTTPClient())
+			idx, hash, e := buildRouting(ctx, g.cfgPath, s, refresh, routeHTTPClient())
 			count := 0
 			if e == nil {
 				s.Cache = hash

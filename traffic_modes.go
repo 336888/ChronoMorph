@@ -174,7 +174,17 @@ func (r *modeRules) selects(chain []processImage) (bool, error) {
 			}
 		}
 	}
-	if r.needsPath {
+	// A missing ancestor path only matters if it can still change this decision.
+	uncertain := false
+	for _, rule := range r.except {
+		uncertain = uncertain || rule.full
+	}
+	if !selected {
+		for _, rule := range r.include {
+			uncertain = uncertain || rule.full
+		}
+	}
+	if uncertain {
 		for _, p := range chain {
 			if p.path == "" {
 				return false, errors.New("无法读取进程路径以判断模式规则")

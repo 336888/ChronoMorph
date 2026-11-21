@@ -41,7 +41,9 @@ func namedProcessMatches(r *modeRules, pid uint32) (bool, error) {
 			break
 		}
 		img := processImage{name: p.name}
-		if r.needsPath {
+		if path, ok := procCache.paths[pid]; ok {
+			img.path = path
+		} else if r.needsPath {
 			h, e := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
 			if e == nil {
 				var buf [32768]uint16
@@ -51,6 +53,7 @@ func namedProcessMatches(r *modeRules, pid uint32) (bool, error) {
 				}
 				windows.CloseHandle(h)
 			}
+			procCache.paths[pid] = img.path
 		}
 		chain = append(chain, img)
 		if !r.mode.Children || p.parent == pid {

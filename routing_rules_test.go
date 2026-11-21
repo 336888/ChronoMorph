@@ -12,7 +12,7 @@ import (
 )
 
 func TestSlackerRoutingFeedsAndOfflineCache(t *testing.T) {
-	var body = "DOMAIN-SUFFIX,example.org\nDOMAIN,other.test\nIP-CIDR,192.0.2.0/24,no-resolve\nIP-CIDR6,2001:db8::/32,no-resolve\nUSER-AGENT,unsupported*\n"
+	var body = "DOMAIN-SUFFIX,example.org\nDOMAIN,other.test\nIP-CIDR,192.0.2.0/24,no-resolve\nIP-CIDR6,2001:db8::/32,no-resolve\nUSER-AGENT,unsupported*\n.domainset.example\nexact.host.test\n"
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte(body)) }))
 	defer server.Close()
 	path := filepath.Join(t.TempDir(), "client.json")
@@ -21,7 +21,7 @@ func TestSlackerRoutingFeedsAndOfflineCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if idx.skipped != 1 || idx.count != 6 {
+	if idx.skipped != 1 || idx.count != 8 {
 		t.Fatal(idx.skipped, idx.count)
 	}
 	s.Cache = cache
@@ -30,7 +30,7 @@ func TestSlackerRoutingFeedsAndOfflineCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, r := range []*routeIndex{idx, loaded} {
-		for host, action := range map[string]string{"login.example.org:443": "PROXY", "child.example.org": "DIRECT", "notexample.org": "", "other.test": "DIRECT", "a.annoying.test": "REJECT", "192.0.2.5": "DIRECT", "[2001:db8::1]:80": "DIRECT"} {
+		for host, action := range map[string]string{"login.example.org:443": "PROXY", "child.example.org": "DIRECT", "notexample.org": "", "sub.domainset.example": "DIRECT", "exact.host.test": "DIRECT", "sub.exact.host.test": "", "other.test": "DIRECT", "a.annoying.test": "REJECT", "192.0.2.5": "DIRECT", "[2001:db8::1]:80": "DIRECT"} {
 			if h := r.match(host); h.action != action {
 				t.Fatal(host, h)
 			}

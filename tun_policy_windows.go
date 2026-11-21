@@ -256,6 +256,7 @@ var procCache struct {
 	sync.Mutex
 	expires time.Time
 	entries map[uint32]procItem
+	paths   map[uint32]string
 }
 
 func refreshProcessCache(pid uint32) bool {
@@ -272,6 +273,7 @@ func refreshProcessCache(pid uint32) bool {
 			items[p.ProcessID] = procItem{windows.UTF16ToString(p.ExeFile[:]), p.ParentProcessID}
 		}
 		procCache.entries = items
+		procCache.paths = make(map[uint32]string)
 		procCache.expires = time.Now().Add(300 * time.Millisecond)
 	}
 
