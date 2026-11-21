@@ -52,6 +52,7 @@ const (
 	tunAction
 	autoAction
 	copyLog
+	deleteNode
 )
 const (
 	nodesList = 200 + iota
@@ -133,6 +134,7 @@ func (u *desktopUI) setupControls() {
 	u.button(useNode, nodesPage, 223, 346, 134, 39, "使用选中节点")
 	u.button(bestNode, nodesPage, 370, 346, 111, 39, "测速优选")
 	u.button(exportNode, nodesPage, 493, 346, 128, 39, "复制当前链接")
+	u.button(deleteNode, nodesPage, 651, 346, 139, 39, "删除选中节点")
 	u.button(manualAction, nodesPage, 223, 415, 140, 36, "手动添加 UDP")
 	u.input(logEdit, logsPage, 220, 102, 581, 320, "EDIT", 0x200000|0x4|0x40|0x800)
 	u.button(copyLog, logsPage, 672, 440, 129, 37, "复制诊断报告")
@@ -175,7 +177,7 @@ func (u *desktopUI) setPage(page int) {
 	case prefsPage:
 		setText(u.controls[listenEdit].h, u.listen)
 	case nodesPage:
-		u.nodeRows = ""
+		u.nodeRows = "\x00"
 	}
 	u.refresh()
 	uc("InvalidateRect", u.hwnd, 0, 0)
@@ -226,6 +228,11 @@ func (u *desktopUI) refresh() {
 	u.label(tunAction, onLabel(u.tun))
 	u.label(autoAction, onLabel(u.auto))
 	if u.page == nodesPage {
+		enable := uintptr(0)
+		if len(u.profiles) > 0 {
+			enable = 1
+		}
+		uc("EnableWindow", u.controls[deleteNode].h, enable)
 		var rows []string
 		for i, p := range u.profiles {
 			name := p.Name
@@ -372,6 +379,27 @@ func (u *desktopUI) command(id int) {
 		}
 		u.work(func() desktopResult {
 			return desktopResult{err: g.importProfile(p), nextPage: homePage, message: "节点已保存"}
+		})
+	case deleteNode:
+		idx := int(int32(uc("SendMessageW", u.controls[nodesList].h, 0x188, 0, 0)))
+		if idx < 0 || idx >= len(u.profiles) {
+			u.feedback("请先选择节点", true)
+			return
+		}
+		p := u.profiles[idx]
+		name := p.Name
+		if name == "" {
+			name = p.ServerIP
+		}
+		msg := "从此电脑删除节点「" + name + "」？"
+		if idx == u.active && u.running {
+			msg += " 当前连接将断开。"
+		}
+		if uc("MessageBoxW", u.hwnd, uintptr(unsafe.Pointer(utf(msg))), uintptr(unsafe.Pointer(utf("删除选中节点"))), 0x124) != 6 {
+			return
+		}
+		u.work(func() desktopResult {
+			return desktopResult{err: g.deleteProfile(idx, p), nextPage: nodesPage, message: "已删除选中节点"}
 		})
 	case useNode:
 		i := int32(uc("SendMessageW", u.controls[nodesList].h, 0x188, 0, 0))

@@ -178,6 +178,39 @@ func TestWindowsGUIProcess(t *testing.T) {
 	click(toggleAction)
 	wait("native stop did not release the listener", func() bool { return controlText(toggle) == "启动连接" })
 	t.Log("Native TLS node import, start, authenticated ping and stop verified")
+	click(navNodes)
+	del := uc("GetDlgItem", native, deleteNode)
+	if del == 0 || uc("IsWindowVisible", del) == 0 {
+		t.Fatal("native delete action missing")
+	}
+	// Post the click because a modal confirmation runs on the GUI thread.
+	confirmDeletion := func(choice uintptr) {
+		uc("PostMessageW", del, 0x00f5, 0, 0)
+		var dialog uintptr
+		wait("delete confirmation did not appear", func() bool {
+			dialog = uc("FindWindowW", uintptr(unsafe.Pointer(utf("#32770"))), uintptr(unsafe.Pointer(utf("删除选中节点"))))
+			return dialog != 0 && uc("GetWindow", dialog, 4) == native
+		})
+		button := uc("GetDlgItem", dialog, choice)
+		if button == 0 {
+			t.Fatal("missing confirmation option")
+		}
+		uc("SendMessageW", button, 0x00f5, 0, 0)
+		wait("confirmation stayed open", func() bool { return uc("IsWindow", dialog) == 0 })
+	}
+	confirmDeletion(7) // IDNO
+	list := uc("GetDlgItem", native, nodesList)
+	if uc("SendMessageW", list, 0x18b, 0, 0) != 1 {
+		t.Fatal("canceled deletion removed a node")
+	}
+	confirmDeletion(6) // IDYES
+	wait("last node still displayed", func() bool { return uc("SendMessageW", list, 0x18b, 0, 0) == 0 })
+	contents, err := os.ReadFile(filepath.Join(cmd.Dir, "client.json"))
+	var after Config
+	if err != nil || json.Unmarshal(contents, &after) != nil || len(after.Profiles) != 0 || after.ServerIP != "" || after.MasterKey != "" {
+		t.Fatal("deleted node still on disk", err)
+	}
+
 	uc("SendMessageW", native, 0x10, 0, 0)
 	if uc("IsWindowVisible", native) != 0 {
 		t.Fatal("close did not hide window to tray")

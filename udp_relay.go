@@ -21,6 +21,8 @@ func handleSocks5UDPAssociate(tcpConn net.Conn, cm *ClientMux, router *Router, r
 
 	stream, err := cm.openUDPRelayStream()
 	if err != nil {
+		cm.logProxyFailure(err)
+		_, _ = tcpConn.Write([]byte{5, 1, 0, 1, 0, 0, 0, 0, 0, 0})
 		return
 	}
 	defer stream.Close()

@@ -15,7 +15,15 @@ type GUIController struct {
 }
 
 func (g *GUIController) StartTunnel() error { return nil }
-func restoreSystemProxy() error             { return nil }
+func (g *GUIController) stopTunnelLocked() error {
+	if g.cm != nil {
+		g.cm.Close()
+		g.cm = nil
+	}
+	g.running = false
+	return nil
+}
+func restoreSystemProxy() error { return nil }
 
 type stubTUN struct{}
 

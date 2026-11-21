@@ -24,10 +24,14 @@ import (
 )
 
 const (
-	CmdTCP     byte = 0x01
-	CmdUDP     byte = 0x02
-	CmdPing    byte = 0x03
-	CmdDialTCP byte = 0x04
+	CmdTCP          byte = 0x01
+	CmdUDP          byte = 0x02
+	CmdPing         byte = 0x03
+	CmdDialTCP      byte = 0x04
+	CmdCapabilities byte = 0x05
+	capDialAck      byte = 1
+	capDialProgress byte = 2
+	CmdDialReady    byte = 0x06
 )
 
 type Config struct {
@@ -206,6 +210,10 @@ func handleServerStream(stream *smux.Stream) {
 	if _, err := io.ReadFull(stream, cmd[:]); err != nil {
 		return
 	}
+	if cmd[0] == CmdCapabilities {
+		_, _ = stream.Write([]byte{CmdCapabilities, capDialAck | capDialProgress})
+		return
+	}
 	if cmd[0] == CmdPing {
 		_, _ = stream.Write([]byte{CmdPing})
 		return
@@ -214,7 +222,8 @@ func handleServerStream(stream *smux.Stream) {
 		handleServerUDPStream(stream)
 		return
 	}
-	if cmd[0] != CmdTCP && cmd[0] != CmdDialTCP {
+	ack := cmd[0] == CmdDialTCP || cmd[0] == CmdDialReady
+	if cmd[0] != CmdTCP && !ack {
 		return
 	}
 
@@ -227,15 +236,20 @@ func handleServerStream(stream *smux.Stream) {
 		return
 	}
 
+	if cmd[0] == CmdDialReady {
+		if _, err := stream.Write([]byte{CmdDialReady}); err != nil {
+			return
+		}
+	}
 	targetConn, err := net.DialTimeout("tcp", string(addrBuf), 8*time.Second)
 	if err != nil {
-		if cmd[0] == CmdDialTCP {
+		if ack {
 			_, _ = stream.Write([]byte{1})
 		}
 		return
 	}
 	defer targetConn.Close()
-	if cmd[0] == CmdDialTCP {
+	if ack {
 		if _, err := stream.Write([]byte{0}); err != nil {
 			return
 		}
@@ -245,15 +259,21 @@ func handleServerStream(stream *smux.Stream) {
 }
 
 type ClientMux struct {
-	tlsConfig    *tls.Config
-	tlsNode      TLSNode
-	closed       bool
-	mu           sync.Mutex
-	serverIP     net.IP
-	sess         *smux.Session
-	packetConn   net.PacketConn
-	packetEngine *ChronoPacketEngine
-	udpRelay     *ClientMux
+	lastFailure   string
+	lastFailureAt time.Time
+	lastLogged    time.Time
+	tlsConfig     *tls.Config
+	tlsNode       TLSNode
+	closed        bool
+	mu            sync.Mutex
+	serverIP      net.IP
+	sess          *smux.Session
+	udpPath       *RTPPacketConn
+	dialMode      byte
+	retryAfter    time.Time
+	lastDialErr   error
+	packetEngine  *ChronoPacketEngine
+	udpRelay      *ClientMux
 }
 
 func NewClientMux(serverIPStr, masterKeyHex string) (*ClientMux, error) {
@@ -282,43 +302,79 @@ func newNodeMux(serverIPStr, masterKeyHex string, node TLSNode) (*ClientMux, err
 }
 
 func (cm *ClientMux) OpenStream() (*smux.Stream, error) {
+	stream, _, _, err := cm.openSessionStream()
+	return stream, err
+}
+
+// Only the dial and first round trip are shared. The short negative cache also
+// prevents queued callers from serially probing the same unreachable node.
+func (cm *ClientMux) openSessionStream() (*smux.Stream, *smux.Session, byte, error) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
-
 	if cm.closed {
-		return nil, net.ErrClosed
+		return nil, nil, 0, net.ErrClosed
 	}
 	if cm.sess != nil {
 		if !cm.sess.IsClosed() {
-			if stream, err := cm.sess.OpenStream(); err == nil {
-				return stream, nil
+			if st, err := cm.sess.OpenStream(); err == nil {
+				return st, cm.sess, cm.dialMode, nil
 			}
 		}
 		cm.closeLocked()
 	}
-
+	if time.Now().Before(cm.retryAfter) {
+		return nil, nil, 0, cm.lastDialErr
+	}
 	var conn net.Conn
 	var err error
 	if cm.tlsConfig != nil {
+		cm.dialMode = CmdDialTCP
 		conn, err = cm.dialTLS()
 	} else {
 		conn, err = cm.dialUDP()
 	}
-	if err != nil {
-		return nil, err
+	if err == nil {
+		cm.sess, err = smux.Client(conn, smuxTransportConfig(conn))
+		if err != nil {
+			_ = conn.Close()
+		}
 	}
-	sess, err := smux.Client(conn, smuxTransportConfig(conn))
-	if err != nil {
-		_ = conn.Close()
-		cm.closeLocked()
-		return nil, err
+	if err == nil && cm.tlsConfig == nil {
+		cm.dialMode, err = confirmUDP(cm.sess)
+		if err != nil {
+			err = fmt.Errorf("UDP 节点未应答，请检查 UDP 放行、密钥和两端时间: %w", err)
+		}
 	}
-	cm.sess = sess
-	stream, err := sess.OpenStream()
-	if err != nil {
-		cm.closeLocked()
+	if err == nil {
+		var st *smux.Stream
+		st, err = cm.sess.OpenStream()
+		if err == nil {
+			cm.lastDialErr = nil
+			cm.retryAfter = time.Time{}
+			return st, cm.sess, cm.dialMode, nil
+		}
 	}
-	return stream, err
+	cm.closeLocked()
+	cm.lastDialErr, cm.retryAfter = err, time.Now().Add(500*time.Millisecond)
+	return nil, nil, 0, err
+}
+
+// A late timeout on an old stream must not close a replacement session or a
+// session which is receiving authenticated packets for unrelated streams.
+func (cm *ClientMux) discardSilentUDP(session *smux.Session, since time.Time) bool {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	if session == nil || cm.tlsConfig != nil || cm.closed {
+		return false
+	}
+	if cm.sess != session {
+		return true
+	}
+	if cm.udpPath == nil || cm.udpPath.lastReply.Load() >= since.UnixNano() {
+		return false
+	}
+	cm.closeLocked()
+	return true
 }
 
 // Give game and voice associations their own transport and congestion queue.
@@ -368,7 +424,7 @@ func (cm *ClientMux) dialUDP() (net.Conn, error) {
 	}
 	tuneKCP(kcpConn, 1150)
 
-	cm.packetConn = rawPC
+	cm.udpPath = rtpPC
 	return kcpConn, nil
 }
 
@@ -394,9 +450,9 @@ func (cm *ClientMux) Close() {
 }
 
 func (cm *ClientMux) closeLocked() {
-	if cm.packetConn != nil {
-		_ = cm.packetConn.Close()
-		cm.packetConn = nil
+	if cm.udpPath != nil {
+		_ = cm.udpPath.Close()
+		cm.udpPath = nil
 	}
 	if cm.sess != nil {
 		_ = cm.sess.Close()

@@ -167,6 +167,7 @@ type RTPPacketConn struct {
 	clientEng *ChronoPacketEngine
 	multiEng  *MultiUserEngine
 	guard     *AbuseGuard
+	lastReply atomic.Int64
 	lastPort  atomic.Int32
 	peers     udpPeers
 }
@@ -230,6 +231,7 @@ func (c *RTPPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
 		if err != nil {
 			continue
 		}
+		c.lastReply.Store(time.Now().UnixNano())
 		LiveStats.AddRx(uint64(n))
 		copied := copy(p, plain)
 		return copied, &net.UDPAddr{IP: c.serverIP, Port: PortMin}, nil

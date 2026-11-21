@@ -88,9 +88,13 @@ func (g *GUIController) startTunnelLocked(cfg *Config, save bool) error {
 }
 
 func (g *GUIController) StopTunnel() error {
-	GlobalTUN.StopTUN()
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	return g.stopTunnelLocked()
+}
+
+func (g *GUIController) stopTunnelLocked() error {
+	GlobalTUN.StopTUN()
 	if g.sysProxyOn {
 		if err := g.setProxyLocked(false, false); err != nil {
 			return err
@@ -169,6 +173,7 @@ func RunWindowsGUI(cfgPath string) {
 	cfg := &Config{Listen: "127.0.0.1:1080"}
 	if b, err := os.ReadFile(cfgPath); err == nil {
 		_ = json.Unmarshal(b, cfg)
+		cfg.normalizeSavedNodes()
 	}
 
 	ctrl := &GUIController{

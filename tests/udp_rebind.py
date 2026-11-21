@@ -33,13 +33,16 @@ def exact(sock, length):
     return bytes(buf)
 
 
-def run_nat(selector, origin, upstreams, stopped, mapping, block_tcp):
+def run_nat(selector, origin, upstreams, stopped, mapping, block_tcp, initial_drops):
     lanes, clients = {}, {}
     while not stopped.is_set():
         for event, _ in selector.select(0.1):
             sock = event.fileobj
             packet, sender = sock.recvfrom(4096)
             if event.data == "front":
+                if initial_drops[0] and packet[:1] == b"\x80":
+                    initial_drops[0] -= 1
+                    continue
                 lane = lanes.setdefault(sender, len(lanes))
                 if lane >= len(upstreams) or (lane == 0 and block_tcp.is_set()):
                     continue
@@ -78,11 +81,11 @@ def test_game_traffic(proxy, block_tcp):
     print("PASS 32 game datagrams while the bulk TCP transport loses all packets", flush=True)
 
 
-def connect_tcp(stack, proxy, listener):
+def connect_tcp(stack, proxy, listener, expect_ok=True):
     deadline = time.monotonic() + 20
     while True:
         try:
-            client = stack.enter_context(socket.create_connection(proxy, 8))
+            client = stack.enter_context(socket.create_connection(proxy, 18))
             break
         except ConnectionRefusedError:
             if time.monotonic() >= deadline:
@@ -91,7 +94,8 @@ def connect_tcp(stack, proxy, listener):
     client.sendall(b"\x05\x01\x00")
     assert exact(client, 2) == b"\x05\x00"
     client.sendall(b"\x05\x01\x00\x03\x09localhost" + struct.pack(">H", listener.getsockname()[1]))
-    assert exact(client, 10)[:2] == b"\x05\x00"
+    reply = exact(client, 10)
+    assert reply[0] == 5 and (reply[1] == 0) == expect_ok, f"unexpected SOCKS result {reply[1]}"
     return client
 
 
@@ -126,7 +130,8 @@ with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as stack:
         sock.bind((IP, port))
         selector.register(sock, selectors.EVENT_READ, "front")
     stopped, block_tcp, mapping = threading.Event(), threading.Event(), [0]
-    nat = threading.Thread(target=run_nat, args=(selector, backend, upstreams, stopped, mapping, block_tcp), daemon=True)
+    initial_drops = [2 if "--first-loss" in sys.argv else 0]
+    nat = threading.Thread(target=run_nat, args=(selector, backend, upstreams, stopped, mapping, block_tcp, initial_drops), daemon=True)
     nat.start()
     stack.callback(nat.join, 2)
     stack.callback(stopped.set)
@@ -137,7 +142,12 @@ with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as stack:
         stack.callback(stop_process, proc)
         if mode == "client":
             first_client = proc
+        else:
+            first_server = proc
     client = connect_tcp(stack, proxy, listener)
+    assert initial_drops[0] == 0
+    if "--first-loss" in sys.argv:
+        print("PASS connected after dropping the first two transport packets", flush=True)
     target, _ = listener.accept()
     with target:
         target.settimeout(6)
@@ -151,6 +161,26 @@ with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as stack:
             target.sendall(msg)
             assert exact(client, len(msg)) == msg
             print(f"PASS existing bidirectional TCP stream over UDP mapping {idx+1}", flush=True)
+        if "--outage" in sys.argv:
+            with bound(socket.SOCK_STREAM) as unavailable:
+                connect_tcp(stack, proxy, unavailable, expect_ok=False)
+            stop_process(first_server)
+            # The local SOCKS listener is still present, but the node is down.
+            started = time.monotonic()
+            connect_tcp(stack, proxy, listener, expect_ok=False)
+            print(f"PASS stopped server returned SOCKS failure in {time.monotonic()-started:.2f}s", flush=True)
+            replacement = subprocess.Popen([server_exe, "server", "-c", str(Path(tmp, "server.json"))])
+            stack.callback(stop_process, replacement)
+            time.sleep(1.2)
+            started = time.monotonic()
+            reopened = connect_tcp(stack, proxy, listener)
+            with listener.accept()[0] as destination:
+                destination.settimeout(5)
+                reopened.sendall(b"recover")
+                assert exact(destination, 7) == b"recover"
+                destination.sendall(b"ok")
+                assert exact(reopened, 2) == b"ok"
+            print(f"PASS new request after server restart in {time.monotonic()-started:.2f}s", flush=True)
         if "--isolate" in sys.argv:
             test_game_traffic(proxy, block_tcp)
             client.sendall(b"after")

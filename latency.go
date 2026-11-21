@@ -7,11 +7,42 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/xtaci/smux"
 )
+
+// Old servers close the capability stream without a payload. A clean FIN is
+// still a response from the authenticated peer. A timeout never means legacy.
+func confirmUDP(sess *smux.Session) (byte, error) {
+	s, err := sess.OpenStream()
+	if err != nil {
+		return 0, err
+	}
+	defer s.Close()
+	_ = s.SetDeadline(time.Now().Add(4 * time.Second))
+	if _, err = s.Write([]byte{CmdCapabilities}); err != nil {
+		return 0, err
+	}
+	var reply [2]byte
+	n, err := io.ReadFull(s, reply[:])
+	if n == 0 && errors.Is(err, io.EOF) && !sess.IsClosed() {
+		return CmdTCP, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	if reply[0] != CmdCapabilities || reply[1]&capDialAck == 0 {
+		return 0, fmt.Errorf("未知 UDP 节点应答")
+	}
+	if reply[1]&capDialProgress != 0 {
+		return CmdDialReady, nil
+	}
+	return CmdDialTCP, nil
+}
 
 func MeasureTunnelLatency(cm *ClientMux) (int64, error) {
 	start := time.Now()
-	stream, err := cm.OpenStream()
+	stream, sess, _, err := cm.openSessionStream()
 	if err != nil {
 		return -1, err
 	}
@@ -34,6 +65,7 @@ func MeasureTunnelLatency(cm *ClientMux) (int64, error) {
 	if errors.Is(err, io.EOF) {
 		return measureLegacyLatency(cm)
 	}
+	cm.discardSilentUDP(sess, start)
 	return -1, fmt.Errorf("服务端未确认连接，请检查 UDP 放行、节点密钥和两端时间：%w", err)
 }
 

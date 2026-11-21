@@ -2,16 +2,30 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"runtime"
 	"strings"
 	"time"
 )
+
+func (cm *ClientMux) logProxyFailure(err error) {
+	now := time.Now()
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	cm.lastFailure, cm.lastFailureAt = err.Error(), now
+	if now.Sub(cm.lastLogged) >= 5*time.Second {
+		log.Printf("[连接] %v", err)
+		cm.lastLogged = now
+	}
+}
 
 func (g *GUIController) BuildDiagReport() string {
 	g.mu.Lock()
 	ip := g.cfg.ServerIP
 	listen := g.cfg.Listen
 	running := g.running
+	cm := g.cm
+	tlsPort := g.cfg.TLSPort
 	sysProxy := g.sysProxyOn
 	g.mu.Unlock()
 
@@ -24,7 +38,18 @@ func (g *GUIController) BuildDiagReport() string {
 	sb.WriteString(fmt.Sprintf("Server IP    : %s\n", ip))
 	sb.WriteString(fmt.Sprintf("Listen       : %s\n", listen))
 	sb.WriteString(fmt.Sprintf("Tunnel Active: %v | SysProxy: %v | TUN: %v\n", running, sysProxy, GlobalTUN.IsActive()))
-	sb.WriteString(fmt.Sprintf("Active Port  : %d (Countdown %ds)\n", LiveStats.activePort.Load(), HopCountdownSec()))
+	if tlsPort != 0 {
+		fmt.Fprintf(&sb, "Transport    : TLS/TCP %d\n", tlsPort)
+	} else {
+		fmt.Fprintf(&sb, "Transport    : UDP (cm://), current port %d\n", LiveStats.activePort.Load())
+	}
+	if cm != nil {
+		cm.mu.Lock()
+		if !cm.lastFailureAt.IsZero() {
+			fmt.Fprintf(&sb, "Last failure : %s %s\n", cm.lastFailureAt.UTC().Format(time.RFC3339), cm.lastFailure)
+		}
+		cm.mu.Unlock()
+	}
 	sb.WriteString(fmt.Sprintf("Speed        : TX %d KB/s | RX %d KB/s\n", LiveStats.txSpeedBps.Load()/1024, LiveStats.rxSpeedBps.Load()/1024))
 	sb.WriteString("\n--- Recent Logs (Last 20) ---\n")
 

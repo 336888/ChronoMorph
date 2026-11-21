@@ -14,6 +14,57 @@ type NodeProfile struct {
 	MasterKey string `json:"master_key"`
 }
 
+func (p NodeProfile) selectedBy(cfg *Config) bool {
+	return p.ServerIP == cfg.ServerIP && p.MasterKey == cfg.MasterKey && p.TLSNode == cfg.TLSNode
+}
+
+// Older configurations may store the active node only at the top level.
+func (cfg *Config) normalizeSavedNodes() {
+	if cfg.ServerIP == "" || cfg.MasterKey == "" {
+		return
+	}
+	if i := cfg.ActiveIndex; i >= 0 && i < len(cfg.Profiles) && cfg.Profiles[i].selectedBy(cfg) {
+		return
+	}
+	for i, p := range cfg.Profiles {
+		if p.selectedBy(cfg) {
+			cfg.ActiveIndex = i
+			return
+		}
+	}
+	cfg.ActiveIndex = len(cfg.Profiles)
+	cfg.Profiles = append(cfg.Profiles, NodeProfile{Name: cfg.ServerIP, ServerIP: cfg.ServerIP, MasterKey: cfg.MasterKey, TLSNode: cfg.TLSNode})
+}
+
+func (g *GUIController) deleteProfile(idx int, selected NodeProfile) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	cfg := *g.cfg
+	if idx < 0 || idx >= len(cfg.Profiles) || cfg.Profiles[idx] != selected {
+		return fmt.Errorf("节点列表已变更，请重新选择")
+	}
+	nodes := make([]NodeProfile, 0, len(cfg.Profiles)-1)
+	nodes = append(nodes, cfg.Profiles[:idx]...)
+	cfg.Profiles = append(nodes, cfg.Profiles[idx+1:]...)
+	if len(cfg.Profiles) == 0 {
+		cfg.ServerIP, cfg.MasterKey, cfg.TLSNode, cfg.ActiveIndex = "", "", TLSNode{}, -1
+	} else if idx == cfg.ActiveIndex {
+		cfg.ActiveIndex = min(idx, len(cfg.Profiles)-1)
+		next := cfg.Profiles[cfg.ActiveIndex]
+		cfg.ServerIP, cfg.MasterKey, cfg.TLSNode = next.ServerIP, next.MasterKey, next.TLSNode
+	} else if idx < cfg.ActiveIndex {
+		cfg.ActiveIndex--
+	}
+	// Stop the system proxy and TUN before removing their active endpoint.
+	// If persistence fails, the original node is still available for restart.
+	if idx == g.cfg.ActiveIndex && g.running {
+		if err := g.stopTunnelLocked(); err != nil {
+			return err
+		}
+	}
+	return g.useConfigLocked(&cfg)
+}
+
 func SaveConfigAtomic(path string, cfg *Config) error {
 	b, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {

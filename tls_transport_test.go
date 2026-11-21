@@ -56,7 +56,7 @@ func TestTLSOnlyTransport(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer bad.Close()
-			if _, err := bad.OpenStream(); err == nil || bad.packetConn != nil {
+			if _, err := bad.OpenStream(); err == nil || bad.udpPath != nil {
 				t.Fatal("unexpected connection or UDP fallback")
 			}
 		})

@@ -120,35 +120,62 @@ func dialWithRouting(target string, cm *ClientMux, router *Router) (io.ReadWrite
 	if router.ShouldDirect(target) {
 		return net.DialTimeout("tcp", target, 8*time.Second)
 	}
-	stream, err := cm.OpenStream()
-	if err != nil {
-		return nil, err
-	}
 	if len(target) > 255 {
-		_ = stream.Close()
 		return nil, fmt.Errorf("target too long")
 	}
-	hdr := make([]byte, 2+len(target))
-	hdr[0] = CmdTCP
-	if cm.tlsConfig != nil {
-		hdr[0] = CmdDialTCP
-		_ = stream.SetDeadline(time.Now().Add(9 * time.Second))
+	for attempt := 0; ; attempt++ {
+		stream, sess, mode, err := cm.openSessionStream()
+		if err != nil {
+			return nil, err
+		}
+		started := time.Now()
+		err = sendDialRequest(stream, target, mode)
+		if err == nil {
+			return stream, nil
+		}
+		_ = stream.Close()
+		if errors.Is(err, errTargetRejected) || !cm.discardSilentUDP(sess, started) || attempt != 0 {
+			return nil, err
+		}
+		// No application bytes have been forwarded yet. Retry only the setup.
 	}
+}
+
+var errTargetRejected = errors.New("节点已应答，目标 TCP 连接失败")
+
+func sendDialRequest(stream net.Conn, target string, mode byte) error {
+	hdr := make([]byte, 2+len(target))
+	hdr[0] = mode
 	hdr[1] = byte(len(target))
 	copy(hdr[2:], target)
+	timeout := 10 * time.Second
+	if mode == CmdDialReady {
+		timeout = 3 * time.Second
+	}
+	_ = stream.SetDeadline(time.Now().Add(timeout))
 	if _, err := stream.Write(hdr); err != nil {
-		_ = stream.Close()
-		return nil, err
+		return err
 	}
-	if cm.tlsConfig != nil {
-		var reply [1]byte
-		if _, err := io.ReadFull(stream, reply[:]); err != nil || reply[0] != 0 {
-			_ = stream.Close()
-			return nil, errors.New("TLS 服务端未能建立目标连接")
+	if mode == CmdDialReady {
+		var ready [1]byte
+		if _, err := io.ReadFull(stream, ready[:]); err != nil {
+			return fmt.Errorf("UDP 节点未确认收到请求: %w", err)
 		}
-		_ = stream.SetDeadline(time.Time{})
+		if ready[0] != CmdDialReady {
+			return fmt.Errorf("UDP 节点返回了无效的确认")
+		}
+		_ = stream.SetDeadline(time.Now().Add(10 * time.Second))
 	}
-	return stream, nil
+	if mode != CmdTCP {
+		var reply [1]byte
+		if _, err := io.ReadFull(stream, reply[:]); err != nil {
+			return fmt.Errorf("等待节点确认目标连接: %w", err)
+		}
+		if reply[0] != 0 {
+			return errTargetRejected
+		}
+	}
+	return stream.SetDeadline(time.Time{})
 }
 
 // Proxy negotiation can read ahead into the first application record.
@@ -247,6 +274,9 @@ func handleSocks5Mixed(c net.Conn, br *bufio.Reader, cm *ClientMux, router *Rout
 
 	remote, err := dialWithRouting(target, cm, router)
 	if err != nil {
+		if cm != nil {
+			cm.logProxyFailure(err)
+		}
 		_, _ = c.Write([]byte{0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 		return
 	}
@@ -270,6 +300,9 @@ func handleHTTPMixed(c net.Conn, br *bufio.Reader, cm *ClientMux, router *Router
 	}
 	remote, err := dialWithRouting(target, cm, router)
 	if err != nil {
+		if cm != nil {
+			cm.logProxyFailure(err)
+		}
 		_, _ = c.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
 		return
 	}
