@@ -346,6 +346,7 @@ func (u *desktopUI) command(id int) {
 	case pasteImport:
 		h := u.controls[linkEdit].h
 		uc("SetFocus", h)
+		uc("SendMessageW", h, 0x00b1, 0, ^uintptr(0)) // EM_SETSEL: replace the previous paste.
 		uc("SendMessageW", h, 0x302, 0, 0)
 	case toggleAction:
 		if !u.running && u.ip == "" {

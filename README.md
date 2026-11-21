@@ -20,7 +20,7 @@ sudo bash ./cm.sh --install
 
 1. 按上面的 Debian 一键安装或升级步骤安装主程序和配套组件。
 2. 输入 `sudo cm`，选 **12 → 1**。填入从 VPS 能正常访问、证书覆盖该域名且支持 TLS 1.3 的目标站，例如可尝试 `aws.amazon.com`。填写节点的空闲 TCP 端口，默认 443；目标地址默认用所填域名的 443。主机防火墙与云安全组需要放行节点端口。该模式使用一次外部目标连接来建立新的传输会话，目标不可达时新连接会失败。
-3. 选 **4** 获取 `cm+reality://` 链接。Windows 下载并完整解压 `chronomorph-windows-amd64.zip`，将 `cm-reality.exe` 与 `ChronoMorph-windows-amd64.exe` 放在同一目录。彻底退出旧客户端，打开新版，在「导入节点」粘贴链接并测试。链接包含用户凭据，请仅交给节点使用者。
+3. 选 **4** 获取 `cm+reality://` 链接。Windows 下载并完整解压 `chronomorph-windows-amd64.zip`，将 `cm-reality.exe` 与 `ChronoMorph-windows-amd64.exe` 放在同一目录。彻底退出旧客户端，打开新版，在「导入节点」粘贴链接并测试。Windows v1.4.2 起也可直接粘贴菜单 4 中带有 `[IPv4 REALITY]` 或 `[IPv6 REALITY]` 的一整行，每次选择一个节点。链接包含用户凭据，请仅交给节点使用者。
 4. 用 `sudo chronomorph reality -check` 在 Debian 本机验证普通 HTTPS 的目标站证书、节点身份和隧道应答。外部 Windows 客户端连通后，可以选 **12 → 2** 关闭旧入口；需要恢复并存选 **12 → 3**。菜单重启服务并验证，失败会恢复原配置。
 
 外层握手使用 [XTLS/Xray-core v26.11.9](https://github.com/XTLS/Xray-core/tree/676eaf66f8f05d4d558ee7a74b4736623d3feeb9) 和其锁定的 [REALITY](https://github.com/XTLS/REALITY/tree/4bb46b2afd8b)。内部传输使用 ChronoMorph，节点链接仅适用于支持此入口的 ChronoMorph 客户端。SOCKS5 UDP 数据通过 TCP 承载，线路丢包时会受到 TCP 重传影响。

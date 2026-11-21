@@ -35,7 +35,7 @@ func (p ShareProfile) encode() (string, error) {
 	return p.scheme() + "://" + base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-func (p ShareProfile) scheme() string {
+func (p TLSNode) scheme() string {
 	if p.RealityName != "" {
 		return "cm+reality"
 	}
@@ -53,10 +53,21 @@ func (p ShareProfile) scheme() string {
 
 func DecodeShareLink(link string) (*ShareProfile, error) {
 	link = strings.TrimSpace(link)
+	if strings.Count(link, "://") > 1 {
+		return nil, errors.New("检测到多条链接，请一次只粘贴一个节点")
+	}
+	// Menu 4 prefixes each exported link with an address family and transport.
+	if strings.HasPrefix(link, "[IPv4 ") || strings.HasPrefix(link, "[IPv6 ") {
+		if _, rest, found := strings.Cut(link, "]"); found {
+			link = strings.TrimSpace(rest)
+		}
+	}
 	prefix, encoded, ok := strings.Cut(link, "://")
 	if !ok || (prefix != "cm" && prefix != "cm+tls" && prefix != "cm+auto" && prefix != "cm+https" && prefix != "cm+reality") {
 		return nil, errors.New("请输入 cm+reality://、cm+https://、cm+auto://、cm:// 或 cm+tls:// 节点链接")
 	}
+	// Terminal selections can include hard line breaks and continuation indentation.
+	encoded = strings.Join(strings.Fields(encoded), "")
 	raw, err := base64.RawURLEncoding.DecodeString(encoded)
 	if err != nil {
 		return nil, errors.New("链接 Base64 解码失败")

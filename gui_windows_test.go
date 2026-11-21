@@ -64,6 +64,27 @@ func TestWindowsSwitchesImportedNode(t *testing.T) {
 	}
 }
 
+func TestWindowsImportPreservesOtherTransports(t *testing.T) {
+	dir := t.TempDir()
+	r := RealityConfig{Name: "example.com", Target: "example.com:443", Listen: ":443"}
+	reality, err := r.node(dir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := ShareProfile{ServerIP: "192.0.2.1", MasterKey: strings.Repeat("ab", 32), TLSNode: reality}
+	legacy := p
+	legacy.RealityNode = RealityNode{}
+	g := &GUIController{cfgPath: filepath.Join(dir, "client.json"), cfg: &Config{}}
+	for _, profile := range []*ShareProfile{&legacy, &p, &p} {
+		if err := g.importProfile(profile); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(g.cfg.Profiles) != 2 || g.cfg.Profiles[0].TLSNode != legacy.TLSNode || g.cfg.Profiles[1].TLSNode != p.TLSNode || g.cfg.ActiveIndex != 1 {
+		t.Fatal("transport overwritten or duplicate created")
+	}
+}
+
 // The release workflow supplies the just-built GUI executable.
 func TestWindowsGUIProcess(t *testing.T) {
 	exe := os.Getenv("CHRONOMORPH_TEST_EXE")
@@ -216,6 +237,42 @@ func TestWindowsGUIProcess(t *testing.T) {
 	if err != nil || json.Unmarshal(contents, &after) != nil || len(after.Profiles) != 0 || after.ServerIP != "" || after.MasterKey != "" {
 		t.Fatal("deleted node still on disk", err)
 	}
+
+	// Take the full Debian output row through the actual edit control, system
+	// clipboard and native paste button; verify all saved transport fields.
+	rc := RealityConfig{Name: "example.com", Target: "example.com:443", Listen: ":443"}
+	realNode, err := rc.node(t.TempDir(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	realProfile := ShareProfile{TLSNode: realNode, ServerIP: "2001:db8::1", MasterKey: master, Name: "测试节点-REALITY-v6"}
+	realLink, err := realProfile.encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	click(importAction)
+	row := "[IPv6 REALITY] " + realLink[:76] + "\r\n  " + realLink[76:]
+	putText := func(s string) {
+		buffer := utf(s)
+		uc("SendMessageW", field, 0x000c, 0, uintptr(unsafe.Pointer(buffer)))
+		runtime.KeepAlive(buffer)
+	}
+	putText(row)
+	uc("SendMessageW", field, 0x00b1, 0, ^uintptr(0))
+	uc("SendMessageW", field, 0x0301, 0, 0) // WM_COPY in the GUI process
+	putText("previous selection")
+	click(pasteImport)
+	click(saveImport)
+	wait("native paste did not save the REALITY node", func() bool {
+		data, err := os.ReadFile(filepath.Join(cmd.Dir, "client.json"))
+		var c Config
+		if err != nil || json.Unmarshal(data, &c) != nil || len(c.Profiles) != 1 || c.ActiveIndex != 0 {
+			return false
+		}
+		saved := c.Profiles[0]
+		return saved.TLSNode == realNode && c.TLSNode == realNode && saved.ServerIP == realProfile.ServerIP && saved.MasterKey == master && saved.Name == realProfile.Name && uc("IsWindowVisible", toggle) != 0
+	})
+	t.Log("Native REALITY clipboard import saved all fields from a wrapped Debian export row")
 
 	uc("SendMessageW", native, 0x10, 0, 0)
 	if uc("IsWindowVisible", native) != 0 {

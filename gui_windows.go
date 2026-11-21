@@ -122,7 +122,8 @@ func (g *GUIController) importProfile(p *ShareProfile) error {
 	cfg.Profiles = append([]NodeProfile(nil), cfg.Profiles...)
 	idx := len(cfg.Profiles)
 	for i, node := range cfg.Profiles {
-		if node.ServerIP == p.ServerIP && node.MasterKey == p.MasterKey && node.TLSPort == p.TLSPort && (node.UDPPort == 0) == (p.UDPPort == 0) {
+		sameTransport := node.scheme() == p.scheme() && node.WebName == p.WebName && node.RealityName == p.RealityName
+		if sameTransport && node.ServerIP == p.ServerIP && node.MasterKey == p.MasterKey && node.TLSPort == p.TLSPort {
 			idx = i
 			break
 		}
@@ -504,7 +505,7 @@ async function testPing() {
   document.getElementById('err').textContent = res.ok ? '' : await res.text();
 }
 async function importLink() {
-  const link = prompt('粘贴服务端生成的 cm+auto:// 双协议或旧版链接');
+  const link = prompt('粘贴一个节点链接，也可复制 Debian 菜单 4 中的一整行');
   if (!link) return;
   const res = await fetch('/api/import', { method: 'POST', headers: H, body: JSON.stringify({ link: link.trim() }) });
   if (res.ok) editingConfig = false;
