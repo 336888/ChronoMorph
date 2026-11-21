@@ -43,6 +43,9 @@ func TestTLSOnlyTransport(t *testing.T) {
 	if _, err = MeasureTunnelLatency(client); err != nil {
 		t.Fatal(err)
 	}
+	if client.tcpPath.profile != tlsProfileReady || smuxTransportConfig(client.tcpPath).Version != 2 {
+		t.Fatal("new peers did not select multiplexing v2 after TLS authentication")
+	}
 	if got := users.users[0]; got.rxByte.Load() == 0 || got.txByte.Load() == 0 {
 		t.Fatal("missing traffic counts")
 	}

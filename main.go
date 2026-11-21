@@ -526,7 +526,7 @@ func smuxConfig() *smux.Config {
 
 func smuxTransportConfig(conn net.Conn) *smux.Config {
 	cfg := smuxConfig()
-	if c, ok := conn.(*tlsMeterConn); ok && (c.protocol == tlsMuxV2 || c.protocol == tlsMuxV2Ready) {
+	if c, ok := conn.(*tlsMeterConn); ok && c.profile != tlsProfileV1 {
 		cfg.Version = 2
 		// A 200 ms path at 100 Mbit/s needs about 2.5 MB in flight.
 		// Retain room for other streams when a single receiver pauses.
