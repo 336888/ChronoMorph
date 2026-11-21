@@ -39,6 +39,8 @@ const (
 )
 
 type Config struct {
+	ChainEntry      string   `json:"chain_entry,omitempty"`
+	AdSubscriptions []string `json:"ad_subscriptions,omitempty"`
 	TLSNode
 	Reality       *RealityConfig `json:"reality,omitempty"`
 	Website       *WebsiteConfig `json:"website,omitempty"`
@@ -65,6 +67,10 @@ func main() {
 	}
 
 	switch os.Args[1] {
+	case "licenses":
+		if err := printLicenses(os.Stdout); err != nil {
+			log.Fatal(err)
+		}
 	case "version":
 		fmt.Println(VersionString())
 	case "restore-proxy":
@@ -344,6 +350,8 @@ func handleServerStream(stream *smux.Stream) {
 }
 
 type ClientMux struct {
+	entry           *ClientMux
+	ownsEntry       bool
 	lastFailure     string
 	lastFailureAt   time.Time
 	lastLogged      time.Time
@@ -515,7 +523,7 @@ func (cm *ClientMux) openUDPRelayStream() (*smux.Stream, error) {
 		return nil, net.ErrClosed
 	}
 	if cm.udpRelay == nil {
-		cm.udpRelay = &ClientMux{serverIP: cm.serverIP, tlsNode: cm.tlsNode, tlsConfig: cm.tlsConfig, webKey: cm.webKey, packetEngine: cm.packetEngine, preferUDP: true}
+		cm.udpRelay = &ClientMux{serverIP: cm.serverIP, tlsNode: cm.tlsNode, tlsConfig: cm.tlsConfig, webKey: cm.webKey, packetEngine: cm.packetEngine, preferUDP: true, entry: cm.entry}
 	}
 	relay := cm.udpRelay
 	cm.mu.Unlock()
@@ -571,6 +579,9 @@ func (cm *ClientMux) Close() {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	cm.closed = true
+	if cm.ownsEntry {
+		cm.entry.Close()
+	}
 	if cm.stopClock != nil {
 		cm.stopClock()
 		<-cm.clockDone
@@ -625,6 +636,28 @@ func runHeadlessClient(cfgPath string) {
 	cm.startClockSync()
 
 	router := NewRouter(cfg.DirectDomains, cfg.BlockDomains)
+	if len(cfg.AdSubscriptions) > 0 {
+		sources, e := adSources(cfg.AdSubscriptions)
+		if e != nil {
+			log.Fatal(e)
+		}
+		rules, _, e := loadAdRules(context.Background(), cfgPath, sources, false)
+		if e != nil {
+			log.Fatal(e)
+		}
+		router.ads.Store(rules)
+		go func() {
+			ticker := time.NewTicker(adRefreshInterval)
+			defer ticker.Stop()
+			for range ticker.C {
+				if rules, _, err := loadAdRules(context.Background(), cfgPath, sources, true); err == nil {
+					router.ads.Store(rules)
+				} else {
+					log.Printf("[去广告] %v", err)
+				}
+			}
+		}()
+	}
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
 		log.Fatalf("[Client] 监听 %s 失败: %v", cfg.Listen, err)

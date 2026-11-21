@@ -1,8 +1,10 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 )
@@ -16,6 +18,33 @@ type NodeProfile struct {
 
 // Apply the local transport preference to a copy of the imported endpoint.
 func (cfg *Config) nodeMux(ip, key string, node TLSNode) (*ClientMux, error) {
+	if cfg.ChainEntry == "" {
+		return cfg.singleNodeMux(ip, key, node)
+	}
+	entry, ok := cfg.entryProfile()
+	if !ok {
+		return nil, fmt.Errorf("前置 CM 节点已失效，请在网络规则中重新选择")
+	}
+	if net.ParseIP(entry.ServerIP).Equal(net.ParseIP(ip)) && entry.TLSPort == node.TLSPort && entry.UDPPort == node.UDPPort {
+		return nil, fmt.Errorf("前置和出口必须是两个不同的 CM 入口")
+	}
+	if node.TLSPort == 0 {
+		return nil, fmt.Errorf("出口节点需要支持 TLS、HTTPS 或 REALITY")
+	}
+	node.UDPPort = 0 // Only the entry is dialled physically, including the game lane.
+	exit, err := newNodeMux(ip, key, node)
+	if err != nil {
+		return nil, err
+	}
+	exit.entry, err = cfg.singleNodeMux(entry.ServerIP, entry.MasterKey, entry.TLSNode)
+	if err != nil {
+		return nil, err
+	}
+	exit.ownsEntry = true
+	return exit, nil
+}
+
+func (cfg *Config) singleNodeMux(ip, key string, node TLSNode) (*ClientMux, error) {
 	if cfg.TLSOnly {
 		if node.TLSPort == 0 {
 			return nil, fmt.Errorf("仅 TLS 模式需要 HTTPS 或带证书指纹的 TLS 节点")
@@ -23,6 +52,28 @@ func (cfg *Config) nodeMux(ip, key string, node TLSNode) (*ClientMux, error) {
 		node.UDPPort = 0
 	}
 	return newNodeMux(ip, key, node)
+}
+
+func (p NodeProfile) entryID() string {
+	// A rename or refreshed certificate should not break the selected route.
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s|%d|%s|%s|%s|%s", p.ServerIP, p.TLSPort, p.scheme(), p.WebName, p.RealityName, p.MasterKey))))
+}
+func (cfg *Config) entryProfile() (NodeProfile, bool) {
+	if cfg.ChainEntry == "" {
+		return NodeProfile{}, false
+	}
+	for _, p := range cfg.Profiles {
+		if p.entryID() == cfg.ChainEntry {
+			return p, true
+		}
+	}
+	return NodeProfile{}, false
+}
+func (cm *ClientMux) physicalIP() net.IP {
+	if cm.entry != nil {
+		return cm.entry.serverIP
+	}
+	return cm.serverIP
 }
 
 func (g *GUIController) setTLSOnly(enabled bool) error {
@@ -74,6 +125,9 @@ func (g *GUIController) deleteProfile(idx int, selected NodeProfile) error {
 	cfg := *g.cfg
 	if idx < 0 || idx >= len(cfg.Profiles) || cfg.Profiles[idx] != selected {
 		return fmt.Errorf("节点列表已变更，请重新选择")
+	}
+	if selected.entryID() == cfg.ChainEntry {
+		return fmt.Errorf("该节点正在用作前置，请先关闭链式代理或更换前置")
 	}
 	nodes := make([]NodeProfile, 0, len(cfg.Profiles)-1)
 	nodes = append(nodes, cfg.Profiles[:idx]...)
@@ -133,8 +187,17 @@ func (g *GUIController) SwitchProfile(idx int) error {
 
 // Retain the local listener and the OS proxy settings during a profile change.
 func (g *GUIController) useConfigLocked(cfg *Config) error {
-	changed := g.cfg.ServerIP != cfg.ServerIP || g.cfg.MasterKey != cfg.MasterKey || g.cfg.TLSNode != cfg.TLSNode || g.cfg.TLSOnly != cfg.TLSOnly
+	oldEntry, _ := g.cfg.entryProfile()
+	newEntry, _ := cfg.entryProfile()
+	changed := oldEntry != newEntry || cfg.ChainEntry != g.cfg.ChainEntry || g.cfg.ServerIP != cfg.ServerIP || g.cfg.MasterKey != cfg.MasterKey || g.cfg.TLSNode != cfg.TLSNode || g.cfg.TLSOnly != cfg.TLSOnly
 	var next *ClientMux
+	if changed && cfg.ChainEntry != "" && cfg.ServerIP != "" && !g.running {
+		probe, err := cfg.nodeMux(cfg.ServerIP, cfg.MasterKey, cfg.TLSNode)
+		if err != nil {
+			return err
+		}
+		probe.Close()
+	}
 	if changed && g.running {
 		if GlobalTUN.IsActive() {
 			return fmt.Errorf("请先关闭 TUN，再切换节点或传输模式")

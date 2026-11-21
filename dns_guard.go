@@ -2,13 +2,14 @@ package main
 
 import (
 	"encoding/binary"
+	"golang.org/x/net/dns/dnsmessage"
 	"io"
 	"log"
 	"net"
 	"time"
 )
 
-func StartSecureDNSProxy(listenAddr string, cm *ClientMux) (net.PacketConn, error) {
+func StartSecureDNSProxy(listenAddr string, cm *ClientMux, router *Router) (net.PacketConn, error) {
 	pc, err := net.ListenPacket("udp", listenAddr)
 	if err != nil {
 		return nil, err
@@ -24,7 +25,11 @@ func StartSecureDNSProxy(listenAddr string, cm *ClientMux) (net.PacketConn, erro
 			}
 			query := append([]byte(nil), buf[:n]...)
 			go func(q []byte, addr net.Addr) {
-				resp, err := resolveOverTunnelTCP(cm, q)
+				resp := blockedDNS(q, router)
+				var err error
+				if resp == nil {
+					resp, err = resolveOverTunnelTCP(cm, q)
+				}
 				if err == nil && len(resp) > 0 {
 					_, _ = pc.WriteTo(resp, addr)
 				}
@@ -71,4 +76,22 @@ func resolveOverTunnelTCP(cm *ClientMux, udpQuery []byte) ([]byte, error) {
 		return nil, err
 	}
 	return resp, nil
+}
+
+func blockedDNS(query []byte, router *Router) []byte {
+	if router == nil {
+		return nil
+	}
+	var msg dnsmessage.Message
+	if msg.Unpack(query) != nil || msg.Response || msg.OpCode != 0 {
+		return nil
+	}
+	for _, q := range msg.Questions {
+		if router.ShouldBlock(q.Name.String()) {
+			resp := dnsmessage.Message{Header: dnsmessage.Header{ID: msg.ID, Response: true, RecursionDesired: msg.RecursionDesired, RecursionAvailable: true, RCode: dnsmessage.RCodeNameError}, Questions: msg.Questions}
+			wire, _ := resp.Pack()
+			return wire
+		}
+	}
+	return nil
 }

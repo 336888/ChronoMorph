@@ -18,6 +18,9 @@ from loopback_helpers import IP, bind, free_port, stop, tcp_request, test_udp, e
 EXE = str(Path(sys.argv[1]).resolve())
 
 
+SERVER = str(Path(sys.argv[3]).resolve()) if len(sys.argv) > 3 else EXE
+
+
 def wait_port(port, proc):
     deadline = time.monotonic() + 8
     while time.monotonic() < deadline:
@@ -56,8 +59,8 @@ def main():
         config = base / "server.json"
         config.write_text(json.dumps({"master_key": key, "listen": "127.0.0.1:0", "reality": {
             "name": "example.com", "target": target, "listen": f"{IP}:{public}", "only": True}}))
-        node = json.loads(subprocess.check_output([EXE, "reality", "-c", str(config), "-create", "-export"]))
-        server = subprocess.Popen([EXE, "server", "-c", str(config)])
+        node = json.loads(subprocess.check_output([SERVER, "reality", "-c", str(config), "-create", "-export"]))
+        server = subprocess.Popen([SERVER, "server", "-c", str(config)])
         handles.callback(stop, server)
         wait_port(public, server)
         assert fetch(public, cert) == fetch(int(target.split(":")[-1]), cert)
@@ -65,7 +68,7 @@ def main():
         # Go uses the system certificate store on Windows. The verified fetch above
         # and the authenticated echo below exercise both paths with our local CA.
         if os.name != "nt":
-            subprocess.run([EXE, "reality", "-c", str(config), "-check"], check=True, timeout=30,
+            subprocess.run([SERVER, "reality", "-c", str(config), "-check"], check=True, timeout=30,
                            env=dict(os.environ, SSL_CERT_FILE=str(cert)))
         tcp = handles.enter_context(bind(socket.SOCK_STREAM))
         tcp.listen()

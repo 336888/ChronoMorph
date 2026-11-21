@@ -274,6 +274,41 @@ func TestWindowsGUIProcess(t *testing.T) {
 	})
 	t.Log("Native REALITY clipboard import saved all fields from a wrapped Debian export row")
 
+	// With two saved CM nodes the native selector must persist A as entry
+	// while the second import remains the active exit.
+	click(importAction)
+	putText(link)
+	click(saveImport)
+	wait("second node was not selected as exit", func() bool {
+		data, err := os.ReadFile(filepath.Join(cmd.Dir, "client.json"))
+		var cfg Config
+		return err == nil && json.Unmarshal(data, &cfg) == nil && len(cfg.Profiles) == 2 && cfg.ServerIP == profile.ServerIP
+	})
+	click(navPrefs)
+	click(openRouting)
+	entryList := uc("GetDlgItem", native, chainList)
+	if uc("SendMessageW", entryList, 0x18b, 0, 0) != 2 {
+		t.Fatal("expected off and one CM entry")
+	}
+	uc("SendMessageW", entryList, 0x186, 1, 0)
+	click(addAdSource)
+	subs := uc("GetDlgItem", native, subscriptionEdit)
+	if int(uc("SendMessageW", subs, 0x000e, 0, 0)) != len(defaultAdSource) {
+		t.Fatal("default domain subscription not inserted")
+	}
+	uc("SendMessageW", subs, 0x000c, 0, uintptr(unsafe.Pointer(utf(""))))
+	click(applyRouting)
+	wait("CM chain settings not persisted", func() bool {
+		data, err := os.ReadFile(filepath.Join(cmd.Dir, "client.json"))
+		var cfg Config
+		if err != nil || json.Unmarshal(data, &cfg) != nil {
+			return false
+		}
+		entry, ok := cfg.entryProfile()
+		return ok && entry.ServerIP == realProfile.ServerIP && cfg.ServerIP == profile.ServerIP
+	})
+	t.Log("Native UI saved two distinct chain nodes and inserted the DNS subscription")
+
 	uc("SendMessageW", native, 0x10, 0, 0)
 	if uc("IsWindowVisible", native) != 0 {
 		t.Fatal("close did not hide window to tray")

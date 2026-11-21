@@ -35,11 +35,14 @@ type TUNManager struct {
 
 var GlobalTUN = &TUNManager{}
 
-func (t *TUNManager) StartTUN(proxyAddr, serverIP string, cm *ClientMux) error {
+func (t *TUNManager) StartTUN(proxyAddr, serverIP string, cm *ClientMux, router *Router) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.active {
 		return nil
+	}
+	if cm != nil {
+		serverIP = cm.physicalIP().String()
 	}
 	if net.ParseIP(serverIP).To4() == nil {
 		return fmt.Errorf("当前 TUN 只支持 IPv4 节点；IPv6 节点请使用系统代理")
@@ -47,16 +50,16 @@ func (t *TUNManager) StartTUN(proxyAddr, serverIP string, cm *ClientMux) error {
 	if !IsAdmin() {
 		return fmt.Errorf("请以管理员身份运行客户端后再启用 TUN")
 	}
-	dll, err := windows.LoadLibraryEx("wintun.dll", 0, windows.LOAD_LIBRARY_SEARCH_APPLICATION_DIR|windows.LOAD_LIBRARY_SEARCH_SYSTEM32)
+	dll, err := loadBundledWintun()
 	if err != nil {
-		return fmt.Errorf("无法加载 64 位 wintun.dll，请将它放在 EXE 同一目录: %w", err)
+		return err
 	}
 	defer windows.FreeLibrary(dll)
 	gw, err := getDefaultGateway()
 	if err != nil || gw == "" {
 		return fmt.Errorf("获取物理默认网关失败: %v", err)
 	}
-	dns, err := StartSecureDNSProxy(net.JoinHostPort(tunDNS, "53"), cm)
+	dns, err := StartSecureDNSProxy(net.JoinHostPort(tunDNS, "53"), cm, router)
 	if err != nil {
 		return fmt.Errorf("本地 DNS 监听失败: %w", err)
 	}

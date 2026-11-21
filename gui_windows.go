@@ -17,6 +17,7 @@ import (
 )
 
 type GUIController struct {
+	rulesMu    sync.Mutex
 	mu         sync.Mutex
 	cfgPath    string
 	cfg        *Config
@@ -184,6 +185,7 @@ func RunWindowsGUI(cfgPath string) {
 	}
 
 	stopCh := make(chan struct{})
+	ctrl.startSubscriptions(stopCh)
 	ctrl.StartTunnelWatchdog(stopCh)
 	ctrl.StartAutoFailover(stopCh)
 
@@ -296,7 +298,7 @@ func RunWindowsGUI(cfgPath string) {
 			http.Error(w, "请先启动加密隧道", 400)
 			return
 		}
-		if err := GlobalTUN.StartTUN(listen, ip, cm); err != nil {
+		if err := GlobalTUN.StartTUN(listen, ip, cm, ctrl.router); err != nil {
 			http.Error(w, err.Error(), 500)
 			return
 		}

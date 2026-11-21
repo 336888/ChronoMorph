@@ -19,6 +19,9 @@ var timeOffsetNs atomic.Int64
 // Only the time-based UDP transport needs an external clock. Closing a mux
 // also stops its outstanding clock lookup before a new transport policy takes effect.
 func (cm *ClientMux) startClockSync() {
+	if cm.ownsEntry {
+		cm.entry.startClockSync()
+	}
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	if cm.closed || cm.packetEngine == nil {

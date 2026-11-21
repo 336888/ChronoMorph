@@ -29,6 +29,7 @@ const (
 	prefsPage
 	importPage
 	manualPage
+	routingPage
 )
 const (
 	navHome = iota + 100
@@ -54,6 +55,9 @@ const (
 	copyLog
 	deleteNode
 	tlsOnlyAction
+	openRouting
+	applyRouting
+	addAdSource
 )
 const (
 	nodesList = 200 + iota
@@ -63,6 +67,8 @@ const (
 	listenEdit
 	logEdit
 	noticeControl
+	chainList
+	subscriptionEdit
 )
 
 type nativeControl struct {
@@ -79,6 +85,9 @@ type desktopResult struct {
 	measuredClient *ClientMux
 }
 type desktopUI struct {
+	entryLabel                                        string
+	entryChoices                                      []string
+	exitLabel                                         string
 	ctrl                                              *GUIController
 	hwnd, instance, icon, backgroundBrush, inputBrush uintptr
 	scale                                             float64
@@ -145,6 +154,11 @@ func (u *desktopUI) setupControls() {
 	u.button(tunAction, prefsPage, 685, 224, 104, 36, "开启 TUN")
 	u.button(autoAction, prefsPage, 685, 302, 104, 36, "开启")
 	u.button(tlsOnlyAction, prefsPage, 685, 398, 104, 36, "开启")
+	u.button(openRouting, prefsPage, 555, 466, 244, 32, "链式代理与去广告")
+	u.input(chainList, routingPage, 224, 133, 565, 75, "LISTBOX", 0x200001|0x100)
+	u.input(subscriptionEdit, routingPage, 224, 299, 565, 72, "EDIT", 0x4|0x40|0x200000|0x1000)
+	u.button(addAdSource, routingPage, 224, 383, 203, 34, "添加 217heidai 订阅")
+	u.button(applyRouting, routingPage, 445, 383, 180, 34, "保存并更新规则")
 	u.input(linkEdit, importPage, 224, 151, 563, 85, "EDIT", 0x4|0x40|0x200000)
 	u.button(saveImport, importPage, 224, 262, 130, 40, "导入并使用")
 	u.button(pasteImport, importPage, 365, 262, 140, 40, "从剪贴板粘贴")
@@ -170,6 +184,35 @@ func (u *desktopUI) setPage(page int) {
 		uc("ShowWindow", c.h, cmd)
 	}
 	switch page {
+	case routingPage:
+		g := u.ctrl
+		g.mu.Lock()
+		cfg := *g.cfg
+		g.mu.Unlock()
+		h := u.controls[chainList].h
+		uc("SendMessageW", h, 0x184, 0, 0)
+		u.entryChoices = nil
+		appendChoice := func(id, name string) {
+			u.entryChoices = append(u.entryChoices, id)
+			p := utf(name)
+			uc("SendMessageW", h, 0x180, 0, uintptr(unsafe.Pointer(p)))
+			runtime.KeepAlive(p)
+		}
+		appendChoice("", "关闭链式代理")
+		idx := 0
+		u.exitLabel = cfg.ServerIP
+		for _, p := range cfg.Profiles {
+			if p.selectedBy(&cfg) {
+				u.exitLabel = p.Name
+				continue
+			}
+			appendChoice(p.entryID(), p.Name+"  ·  "+p.ServerIP)
+			if p.entryID() == cfg.ChainEntry {
+				idx = len(u.entryChoices) - 1
+			}
+		}
+		uc("SendMessageW", h, 0x186, uintptr(idx), 0)
+		setText(u.controls[subscriptionEdit].h, strings.Join(cfg.AdSubscriptions, "\r\n"))
 	case importPage:
 		setText(u.controls[linkEdit].h, "")
 		uc("SetFocus", u.controls[linkEdit].h)
@@ -202,6 +245,10 @@ func (u *desktopUI) refresh() {
 	u.profiles = append(u.profiles[:0], g.cfg.Profiles...)
 	u.webName, u.realityName = g.cfg.WebName, g.cfg.RealityName
 	u.tlsOnly = g.cfg.TLSOnly
+	u.entryLabel = ""
+	if entry, ok := g.cfg.entryProfile(); ok {
+		u.entryLabel = entry.Name
+	}
 	u.active = g.cfg.ActiveIndex
 	u.nodeName = ""
 	if u.active >= 0 && u.active < len(u.profiles) && u.profiles[u.active].ServerIP == u.ip {
@@ -337,6 +384,28 @@ func (u *desktopUI) command(id int) {
 		return
 	}
 	switch id {
+	case openRouting:
+		u.setPage(routingPage)
+	case addAdSource:
+		h := u.controls[subscriptionEdit].h
+		lines := strings.Fields(getText(h))
+		for _, line := range lines {
+			if line == defaultAdSource {
+				return
+			}
+		}
+		setText(h, strings.Join(append(lines, defaultAdSource), "\r\n"))
+	case applyRouting:
+		idx := int(int32(uc("SendMessageW", u.controls[chainList].h, 0x188, 0, 0)))
+		if idx < 0 || idx >= len(u.entryChoices) {
+			u.feedback("请选择前置节点，或选择关闭链式代理", true)
+			return
+		}
+		entry, src := u.entryChoices[idx], getText(u.controls[subscriptionEdit].h)
+		u.work(func() desktopResult {
+			n, err := g.applyRouting(entry, src)
+			return desktopResult{message: fmt.Sprintf("已保存 · 去广告规则 %d 条", n), err: err}
+		})
 	case importAction:
 		u.setPage(importPage)
 	case manualAction:
@@ -479,7 +548,7 @@ func (u *desktopUI) command(id int) {
 			if !g.running {
 				return desktopResult{err: fmt.Errorf("请先启动连接")}
 			}
-			return desktopResult{err: GlobalTUN.StartTUN(g.proxyAddressLocked(), g.cfg.ServerIP, g.cm)}
+			return desktopResult{err: GlobalTUN.StartTUN(g.proxyAddressLocked(), g.cfg.ServerIP, g.cm, g.router)}
 		})
 	case tlsOnlyAction:
 		enable := !u.tlsOnly
@@ -538,6 +607,9 @@ func (u *desktopUI) copy(s string) error {
 	return nil
 }
 func (u *desktopUI) transport() string {
+	if u.entryLabel != "" {
+		return u.entryLabel + " → " + u.nodeName
+	}
 	if u.ip == "" {
 		return "尚未配置节点"
 	}

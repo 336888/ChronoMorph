@@ -14,13 +14,19 @@ sudo bash ./cm.sh --install
 
 完成本次更新后，后续直接运行 `sudo cm --install`，或在 `sudo cm` 菜单选 **1**。升级会短暂重启服务，并检查已启用的入口。脚本沿用已有用户和节点密钥；新版服务验证失败时恢复上个版本。离线安装可解压同版本的 Debian 完整包，从包内运行同一条命令，系统依赖仍通过 apt 安装。
 
+## Windows 链式代理与去广告
+
+先导入两个 CM 节点。在「我的节点」选择 B 并点「使用选中节点」，再到「设置 → 链式代理与去广告」选择 A 作为前置，点「保存并更新规则」。连接顺序为本机 → A → B → 目标网站。应用 TCP、应用 UDP 和出口测速都经过 A，B 提供最终出口。前置可以使用已有 CM 传输，出口需要有 TCP 入口（REALITY、HTTPS、TLS 或自动节点）。链式模式下应用目标统一走出口；一个节点不可达会导致连接失败。要换成普通单节点，选「关闭链式代理」并保存。
+
+同一页面可点「添加 217heidai 订阅」，或每行输入一个 HTTPS 域名列表地址，点「保存并更新规则」。客户端接受纯域名、`||域名^` 和 `@@||域名^`；域名规则覆盖子域名，例外优先于订阅拦截。下载成功后规则用于 HTTP、SOCKS5 的域名请求和 TUN 的本地 DNS。首次下载需要联网，以后优先使用本地缓存，每 8 小时刷新。清空订阅列表并保存可关闭。直接连接 IP、应用自带加密 DNS 和同域名视频广告可能不受域名拦截影响。
+
 ## Debian 和 Windows 的免证书 REALITY 入口
 
 使用现有 Debian VPS 即可，无需 AWS 账号、自有域名或手动上传证书。安装时自动生成服务端密钥。公网入口接收 TLS 1.3 连接，普通浏览器访问配置的服务器名称时，由指定 HTTPS 站点完成握手并返回网页。节点客户端使用 REALITY 公钥和短 ID，并在加密通道内验证原有用户凭据和服务端指纹。目标网站域名不会改变 VPS 的公网 IP 或网络归属，流量仍可能被识别。
 
 1. 按上面的 Debian 一键安装或升级步骤安装主程序和配套组件。
 2. 输入 `sudo cm`，选 **12 → 1**。填入从 VPS 能正常访问、证书覆盖该域名且支持 TLS 1.3 的目标站，例如可尝试 `aws.amazon.com`。填写节点的空闲 TCP 端口，默认 443；目标地址默认用所填域名的 443。主机防火墙与云安全组需要放行节点端口。该模式使用一次外部目标连接来建立新的传输会话，目标不可达时新连接会失败。
-3. 选 **4** 获取 `cm+reality://` 链接。Windows 下载并完整解压 [chronomorph-windows-amd64.zip](https://github.com/336888/ChronoMorph/releases/latest/download/chronomorph-windows-amd64.zip)，将 `cm-reality.exe` 与 `ChronoMorph-windows-amd64.exe` 放在同一目录。彻底退出旧客户端，打开新版，在「导入节点」粘贴链接并测试。Windows v1.4.2 起也可直接粘贴菜单 4 中带有 `[IPv4 REALITY]` 或 `[IPv6 REALITY]` 的一整行，每次选择一个节点。链接包含用户凭据，请仅交给节点使用者。
+3. 选 **4** 获取 `cm+reality://` 链接。Windows 下载单文件 [ChronoMorph-windows-amd64.exe](https://github.com/336888/ChronoMorph/releases/latest/download/ChronoMorph-windows-amd64.exe)。彻底退出旧客户端，打开新版，在「导入节点」粘贴链接并测试。Windows v1.4.2 起也可直接粘贴菜单 4 中带有 `[IPv4 REALITY]` 或 `[IPv6 REALITY]` 的一整行，每次选择一个节点。链接包含用户凭据，请仅交给节点使用者。
 4. 用 `sudo chronomorph reality -check` 在 Debian 本机验证普通 HTTPS 的目标站证书、节点身份和隧道应答。外部 Windows 客户端连通后，可以选 **12 → 2** 关闭旧入口；需要恢复并存选 **12 → 3**。菜单重启服务并验证，失败会恢复原配置。
 
 外层握手使用 [XTLS/Xray-core v26.11.9](https://github.com/XTLS/Xray-core/tree/676eaf66f8f05d4d558ee7a74b4736623d3feeb9) 和其锁定的 [REALITY](https://github.com/XTLS/REALITY/tree/4bb46b2afd8b)。内部传输使用 ChronoMorph，节点链接仅适用于支持此入口的 ChronoMorph 客户端。SOCKS5 UDP 数据通过 TCP 承载，线路丢包时会受到 TCP 重传影响。
@@ -86,7 +92,7 @@ python3 tests/throughput.py ./chronomorph-linux-amd64 --transport tcp --rtt 200 
 
 1. **推送到 GitHub 自动编译**：在 Actions 的 Release ChronoMorph 页面手动指定版本，或推送标签 `git tag v1.4.1 && git push origin v1.4.1`，在 Releases 页面下载四端产物。
 2. **Debian 服务端部署**：按菜单放行双协议节点的 TCP 和 UDP 端口，从 Release 下载 `chronomorph-debian-amd64.tar.gz`（x86_64）或 `chronomorph-debian-arm64.tar.gz`（aarch64）。解压并进入同名目录，运行 `sudo bash cm.sh`，选 1 安装或升级。离线包含服务端程序，首次安装系统依赖仍使用 apt，后续输入 `cm` 唤出管理菜单。
-3. **Windows 客户端**：下载并右键「全部解压」Windows 完整包，在解压目录中双击 `ChronoMorph-windows-amd64.exe` 打开原生桌面窗口。桌面快捷方式也应指向这个文件。请保留同目录的 `cm-reality.exe`，在「导入节点」中粘贴分享链接。最小化或关闭窗口会收起到托盘，再次双击 EXE 或选择托盘「打开主窗口」即可恢复。退出请选择托盘「彻底退出」。如需 TUN 虚拟网卡，将 `wintun.dll` 放至同目录并以管理员运行。
+3. **Windows 客户端**：双击单文件客户端打开原生桌面窗口。REALITY 已编译进主程序。在「导入节点」中粘贴分享链接。最小化或关闭窗口会收起到托盘，再次双击 EXE 或选择托盘「打开主窗口」即可恢复。退出请选择托盘「彻底退出」。启用 TUN 时，以管理员身份运行客户端，先连接 IPv4 节点，再在「设置」点击「开启 TUN」。首次启用会将 EXE 内置的官方签名 Wintun 0.14.1 安装到程序文件目录，下次开启时校验并复用。第三方许可可运行 `ChronoMorph-windows-amd64.exe licenses` 查看。
 4. **Android 客户端**：提供 ARM64 命令行程序。在可执行目录准备好 `client.json` 后，运行 `chmod +x chronomorph_android_arm64 && ./chronomorph_android_arm64 client -c client.json`，默认监听 `127.0.0.1:1080`，接入 Mihomo/Clash 的 `socks5` 节点（并在规则顶部放行 VPS IP 直连）。
 
 Windows 客户端直接使用 Win32 桌面窗口。导入后启动本地代理，点击「测速」验证服务端应答。升级 Windows 客户端前，请先退出旧进程。每台客户端请使用独立的服务端用户密钥。

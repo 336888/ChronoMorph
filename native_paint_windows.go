@@ -30,7 +30,7 @@ func (u *desktopUI) paint(dc uintptr) {
 	}
 	rounded(dc, u.rect(22, 510, 8, 8), u.px(4), dot, dot)
 	u.text(dc, 38, 498, 140, 31, 12, 500, muted, state)
-	title := map[int]string{homePage: "连接概览", nodesPage: "我的节点", logsPage: "连接日志", prefsPage: "设置", importPage: "导入节点", manualPage: "手动添加节点"}[u.page]
+	title := map[int]string{homePage: "连接概览", nodesPage: "我的节点", logsPage: "连接日志", prefsPage: "设置", importPage: "导入节点", manualPage: "手动添加节点", routingPage: "链式代理与去广告"}[u.page]
 	u.text(dc, 212, 18, 435, 51, 29, 700, fg, title)
 	switch u.page {
 	case homePage:
@@ -77,13 +77,20 @@ func (u *desktopUI) paint(dc uintptr) {
 		u.text(dc, 233, 102, 450, 31, 16, 600, fg, "本地 HTTP / SOCKS5 监听地址")
 		u.card(dc, 211, 211, 607, 148, panel)
 		u.text(dc, 233, 221, 385, 28, 17, 600, fg, "TUN 虚拟网卡")
-		u.text(dc, 233, 248, 440, 20, 12, 400, muted, "接管 IPv4，需要管理员权限与 wintun.dll")
+		u.text(dc, 233, 248, 440, 20, 12, 400, muted, "接管 IPv4，内置驱动，需要管理员权限")
 		u.line(dc, 232, 284, 794, 284, 1, edge)
 		u.text(dc, 233, 299, 395, 27, 17, 600, fg, "登录 Windows 后启动")
 		u.text(dc, 233, 327, 418, 21, 12, 400, muted, "对当前 Windows 用户生效")
 		u.card(dc, 211, 375, 607, 85, panel)
 		u.text(dc, 233, 388, 440, 26, 17, 600, fg, "仅 TLS 传输")
 		u.text(dc, 233, 419, 445, 23, 12, 400, muted, "到节点的网页、游戏和测速流量仅走 TLS。")
+	case routingPage:
+		u.card(dc, 211, 92, 607, 154, panel)
+		u.text(dc, 230, 99, 552, 28, 15, 600, fg, "前置 CM 节点")
+		u.text(dc, 230, 214, 550, 26, 13, 400, muted, "顺序：本机 → 前置节点 → 当前出口（"+u.exitLabel+"）")
+		u.card(dc, 211, 252, 607, 223, panel)
+		u.text(dc, 230, 263, 551, 29, 15, 600, fg, "去广告域名订阅 · 每行一个 HTTPS 地址")
+		u.text(dc, 230, 432, 553, 25, 12, 400, muted, "清空并保存即可关闭订阅。已有规则每 8 小时自动更新。")
 	case importPage:
 		u.card(dc, 211, 92, 607, 245, panel)
 		u.text(dc, 230, 107, 540, 32, 15, 500, fg, "粘贴一个节点链接，可直接复制 Debian 菜单 4 中的一整行")
@@ -115,7 +122,7 @@ func (u *desktopUI) paintButton(item *drawItem) {
 	nav := id >= navHome && id <= navPrefs
 	if nav {
 		fill, stroke, ink = side, side, muted
-		active := u.page == id-navHome+1 || (id == navNodes && (u.page == manualPage || u.page == importPage))
+		active := u.page == id-navHome+1 || (id == navPrefs && u.page == routingPage) || (id == navNodes && (u.page == manualPage || u.page == importPage))
 		if active {
 			fill, stroke, ink = 0x18343c, 0x23484b, mint
 		}

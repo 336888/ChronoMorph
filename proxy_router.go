@@ -18,6 +18,7 @@ import (
 )
 
 type Router struct {
+	ads            atomic.Pointer[adRules]
 	mu             sync.RWMutex
 	directSuffixes []string
 	blockSuffixes  []string
@@ -82,7 +83,7 @@ func (r *Router) ShouldBlock(target string) bool {
 			return true
 		}
 	}
-	return false
+	return r.ads.Load().blocksHost(host)
 }
 
 func (r *Router) ShouldDirect(target string) bool {
@@ -119,7 +120,7 @@ func dialWithRouting(target string, cm *ClientMux, router *Router) (net.Conn, er
 	if router.ShouldBlock(target) {
 		return nil, fmt.Errorf("blocked: %s", target)
 	}
-	if router.ShouldDirect(target) {
+	if (cm == nil || cm.entry == nil) && router.ShouldDirect(target) {
 		return net.DialTimeout("tcp", target, 8*time.Second)
 	}
 	if len(target) > 255 {
@@ -357,7 +358,7 @@ func handleHTTPMixed(c net.Conn, cm *ClientMux, router *Router) {
 			host := req.URL.Hostname()
 			if router.ShouldBlock(host) {
 				fail(w, req, fmt.Errorf("blocked: %s", req.Host))
-			} else if router.ShouldDirect(host) {
+			} else if (cm == nil || cm.entry == nil) && router.ShouldDirect(host) {
 				directForward.ServeHTTP(w, req)
 			} else {
 				forward.ServeHTTP(w, req)

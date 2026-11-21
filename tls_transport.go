@@ -180,16 +180,20 @@ func clientTLSConfig(master []byte, node TLSNode) (*tls.Config, error) {
 
 func (cm *ClientMux) dialTLS(ctx context.Context) (net.Conn, error) {
 	addr := net.JoinHostPort(cm.serverIP.String(), strconv.Itoa(cm.tlsNode.TLSPort))
-	dialer := tls.Dialer{NetDialer: &net.Dialer{Timeout: 5 * time.Second}, Config: cm.tlsConfig}
 	var conn *tls.Conn
 	var err error
 	if cm.tlsNode.RealityName != "" {
 		conn, err = cm.dialReality(ctx, addr)
 	} else {
+		handshake, cancel := context.WithTimeout(ctx, 12*time.Second)
+		defer cancel()
 		var raw net.Conn
-		raw, err = dialer.DialContext(ctx, "tcp", addr)
+		raw, err = cm.dialNodeTCP(handshake, addr)
 		if err == nil {
-			conn = raw.(*tls.Conn)
+			conn = tls.Client(raw, cm.tlsConfig)
+			if err = conn.HandshakeContext(handshake); err != nil {
+				raw.Close()
+			}
 		}
 	}
 	if err != nil {
@@ -373,4 +377,34 @@ func checkLocalTLS(cfgPath string) error {
 	defer cm.Close()
 	_, err = MeasureTunnelLatency(cm)
 	return err
+}
+
+// The nested connection is opened by the authenticated entry CM server.
+// No local DNS, direct-route policy or fallback applies between hops.
+func (cm *ClientMux) dialNodeTCP(ctx context.Context, addr string) (net.Conn, error) {
+	if cm.entry == nil {
+		d := net.Dialer{Timeout: 5 * time.Second}
+		return d.DialContext(ctx, "tcp", addr)
+	}
+	type result struct {
+		conn net.Conn
+		err  error
+	}
+	done := make(chan result)
+	go func() {
+		conn, err := dialWithRouting(addr, cm.entry, nil)
+		select {
+		case done <- result{conn, err}:
+		case <-ctx.Done():
+			if conn != nil {
+				conn.Close()
+			}
+		}
+	}()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case r := <-done:
+		return r.conn, r.err
+	}
 }

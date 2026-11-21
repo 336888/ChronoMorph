@@ -1,5 +1,13 @@
 # Changelog
 
+## [v1.4.3]
+
+- Windows 可以选择一个已保存的 CM 节点作为前置，另一个 CM 节点作为出口。应用 TCP 和 UDP 都经过这两个节点。
+- 新增域名去广告订阅、离线缓存和定时刷新，提供 217heidai 域名规则入口。
+
+- Windows 客户端为单个 EXE。REALITY 在主进程内完成握手，沿用原有节点链接和密钥。
+- 首次开启 TUN 时客户端自动准备内置的官方签名 Wintun 驱动。创建 IPv4 虚拟网卡需要管理员权限。
+
 ## [v1.4.2]
 
 - Windows 发布包统一为 `chronomorph-windows-amd64.zip`，内含主程序与 `cm-reality.exe`。客户端会显示缺失组件的完整路径。

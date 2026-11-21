@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/ecdh"
@@ -13,14 +12,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
-	"sync"
 	"time"
 
 	"chronomorph/internal/bridgeconfig"
@@ -131,99 +126,18 @@ func (r *RealityConfig) node(dir string, create bool) (TLSNode, error) {
 	return TLSNode{RealityNode: RealityNode{RealityName: r.Name, RealityKey: base64.RawURLEncoding.EncodeToString(key.PublicKey().Bytes()), RealityID: hex.EncodeToString(sid)}, TLSPort: port, TLSPin: fmt.Sprintf("%x", sha256.Sum256(pair.Certificate[0]))}, nil
 }
 
-func bridgePath() (string, error) {
-	exe, err := os.Executable()
-	if err != nil {
-		return "", err
-	}
-	name := "cm-reality"
-	if runtime.GOOS == "windows" {
-		name += ".exe"
-	}
-	p := filepath.Join(filepath.Dir(exe), name)
-	info, e := os.Stat(p)
-	if errors.Is(e, os.ErrNotExist) {
-		if runtime.GOOS == "windows" {
-			return "", fmt.Errorf("缺少 REALITY 组件 %s。请将 chronomorph-windows-amd64.zip 全部解压到同一文件夹，再从该文件夹启动主程序", p)
-		}
-		return "", fmt.Errorf("缺少 REALITY 组件 %s。请重新安装完整的 Debian 软件包", p)
-	}
-	if e != nil {
-		return "", fmt.Errorf("无法访问 REALITY 组件: %w", e)
-	}
-	if !info.Mode().IsRegular() {
-		return "", fmt.Errorf("REALITY 组件路径不是普通文件: %s", p)
-	}
-	return p, nil
-}
-
-type realityProcess struct {
-	cmd    *exec.Cmd
-	input  io.WriteCloser
-	output io.ReadCloser
-	once   sync.Once
-}
-
-func startRealityProcess(cfg bridgeconfig.Config) (*realityProcess, error) {
-	path, err := bridgePath()
-	if err != nil {
-		return nil, err
-	}
-	b, err := json.Marshal(cfg)
-	if err != nil {
-		return nil, err
-	}
-	cmd := exec.Command(path)
-	hideBridgeWindow(cmd)
-	in, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, err
-	}
-	out, err := cmd.StdoutPipe()
-	if err != nil {
-		in.Close()
-		return nil, err
-	}
-	if err = cmd.Start(); err != nil {
-		in.Close()
-		out.Close()
-		return nil, err
-	}
-	p := &realityProcess{cmd: cmd, input: in, output: out}
-	if _, err = in.Write(append(b, '\n')); err != nil {
-		p.stop()
-		out.Close()
-		_ = cmd.Wait()
-		return nil, err
-	}
-	return p, nil
-}
-func (p *realityProcess) stop() { p.once.Do(func() { p.input.Close(); _ = p.cmd.Process.Kill() }) }
-func (p *realityProcess) wait() { _ = p.cmd.Wait() }
-
-type realityPipe struct {
-	net.Conn
-	child *realityProcess
-}
-
-func (c *realityPipe) Close() error { err := c.Conn.Close(); c.child.stop(); return err }
-
 func (cm *ClientMux) dialReality(ctx context.Context, address string) (*tls.Conn, error) {
 	key, sid, err := cm.tlsNode.identity()
 	if err != nil {
 		return nil, err
 	}
-	p, err := startRealityProcess(bridgeconfig.Config{Mode: "client", Address: address, Name: cm.tlsNode.RealityName, Key: key, ShortID: sid})
+	handshake, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+	conn, err := cm.dialRealityTransport(handshake, bridgeconfig.Config{Mode: "client", Address: address, Name: cm.tlsNode.RealityName, Key: key, ShortID: sid})
 	if err != nil {
 		return nil, err
 	}
-	local, pump := net.Pipe()
-	conn := &realityPipe{Conn: local, child: p}
-	go func() { _, _ = io.Copy(p.input, pump); p.stop() }()
-	go func() { _, _ = io.Copy(pump, p.output); pump.Close(); p.stop(); p.wait() }()
 	secured := tls.Client(conn, cm.tlsConfig)
-	handshake, cancel := context.WithTimeout(ctx, 12*time.Second)
-	defer cancel()
 	if err := secured.HandshakeContext(handshake); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("REALITY 认证失败或目标不可达: %w", err)
@@ -249,26 +163,7 @@ func serveReality(ctx context.Context, r *RealityConfig, dir string, users *Mult
 	}
 	defer ln.Close()
 	go serveTLS(ln, cert, users)
-	p, e := startRealityProcess(bridgeconfig.Config{Mode: "server", Address: r.Listen, Name: r.Name, Key: key.Bytes(), ShortID: sid, Target: r.Target, Backend: ln.Addr().String()})
-	if e != nil {
-		return e
-	}
-	stop := context.AfterFunc(ctx, p.stop)
-	defer stop()
-	rd := bufio.NewReader(p.output)
-	b, e := rd.ReadString('\n')
-	if e != nil || b != "READY\n" {
-		p.stop()
-		p.wait()
-		return errors.New("REALITY 入口未启动，请检查监听端口和组件")
-	}
-	_, _ = io.Copy(io.Discard, rd)
-	p.stop()
-	p.wait()
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-	return errors.New("REALITY 入口已停止")
+	return runRealityListener(ctx, bridgeconfig.Config{Mode: "server", Address: r.Listen, Name: r.Name, Key: key.Bytes(), ShortID: sid, Target: r.Target, Backend: ln.Addr().String()})
 }
 
 func realityAction(path string, create, export, check bool) error {
@@ -287,7 +182,7 @@ func realityAction(path string, create, export, check bool) error {
 	if export {
 		return json.NewEncoder(os.Stdout).Encode(node)
 	}
-	if _, e = bridgePath(); e != nil {
+	if e = checkRealitySupport(); e != nil {
 		return e
 	}
 	if !check {
