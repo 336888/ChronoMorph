@@ -142,8 +142,17 @@ func bridgePath() (string, error) {
 	}
 	p := filepath.Join(filepath.Dir(exe), name)
 	info, e := os.Stat(p)
-	if e != nil || !info.Mode().IsRegular() {
-		return "", errors.New("缺少 REALITY 组件。请解压完整的 REALITY 安装包，并保留程序旁的 cm-reality 文件")
+	if errors.Is(e, os.ErrNotExist) {
+		if runtime.GOOS == "windows" {
+			return "", fmt.Errorf("缺少 REALITY 组件 %s。请将 chronomorph-windows-amd64.zip 全部解压到同一文件夹，再从该文件夹启动主程序", p)
+		}
+		return "", fmt.Errorf("缺少 REALITY 组件 %s。请重新安装完整的 Debian 软件包", p)
+	}
+	if e != nil {
+		return "", fmt.Errorf("无法访问 REALITY 组件: %w", e)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("REALITY 组件路径不是普通文件: %s", p)
 	}
 	return p, nil
 }

@@ -18,6 +18,8 @@ set CGO_ENABLED=0
 set "GOOS=windows"
 set "GOARCH=amd64"
 go build -mod=readonly -trimpath -buildvcs=false -ldflags="%LDFLAGS% -H=windowsgui" -o dist\windows\ChronoMorph.exe . || exit /b 1
+powershell -NoProfile -File "%~dp0scripts\build-reality.ps1" -OutputDir dist\windows || exit /b 1
+powershell -NoProfile -Command "$ErrorActionPreference='Stop'; Compress-Archive -Path dist\windows\* -DestinationPath dist\chronomorph-windows-amd64.zip" || exit /b 1
 copy /y setup_win.ps1 dist\windows\ >nul 2>&1
 copy /y uninstall_win.ps1 dist\windows\ >nul 2>&1
 copy /y client.example.json dist\windows\client.json >nul 2>&1

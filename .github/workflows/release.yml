@@ -15,30 +15,59 @@ permissions:
 
 jobs:
   windows:
+    needs: reality
     runs-on: windows-latest
     permissions:
       contents: read
     env:
       CGO_ENABLED: '0'
+      VERSION: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: '1.24.13'
-      - name: Test the Windows GUI and tray
+      - uses: actions/download-artifact@v4
+        with:
+          name: reality-windows-amd64
+          path: ${{ runner.temp }}/winpkg
+      - name: Build and extract the complete Windows ZIP
+        shell: bash
+        run: |
+          [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          pkg=$(cygpath -u "$RUNNER_TEMP")/winpkg
+          flags="-s -w -H=windowsgui -X main.AppVersion=$VERSION -X main.BuildTime=$(git show -s --format=%cs HEAD)"
+          go build -mod=readonly -trimpath -buildvcs=false -ldflags="$flags" -o "$pkg/ChronoMorph-windows-amd64.exe" .
+          cd "$pkg"
+          sha256sum ChronoMorph-windows-amd64.exe cm-reality.exe Xray-LICENSE.txt REALITY-LICENSE.txt > SHA256SUMS.txt
+          python -m zipfile -c ../chronomorph-windows-amd64.zip *.exe *.txt
+          cd ..
+          python -m zipfile -e chronomorph-windows-amd64.zip "Windows package test"
+          cd "Windows package test"
+          sha256sum -c SHA256SUMS.txt
+          ./cm-reality.exe version
+      - name: Test the packaged Windows GUI and tray
         shell: pwsh
         run: |
-          $exe = Join-Path $env:RUNNER_TEMP 'ChronoMorph.exe'
-          go build -mod=readonly -trimpath -buildvcs=false -ldflags="-s -w -H=windowsgui" -o $exe .
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $env:CHRONOMORPH_TEST_EXE = $exe
+          $env:CHRONOMORPH_TEST_EXE = Join-Path $env:RUNNER_TEMP 'Windows package test/ChronoMorph-windows-amd64.exe'
           $env:CHRONOMORPH_PREVIEW = Join-Path $env:RUNNER_TEMP 'ChronoMorph-desktop.png'
           go test -count=1 -mod=readonly -v ./...
           exit $LASTEXITCODE
+      - name: Test TCP and UDP through the packaged Windows REALITY component
+        shell: pwsh
+        run: |
+          $origin = Join-Path $env:RUNNER_TEMP 'test-origin.exe'
+          go build -mod=readonly -o $origin tests/testdata/reality_origin.go
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $client = Join-Path $env:RUNNER_TEMP 'Windows package test/ChronoMorph-windows-amd64.exe'
+          python tests/reality_loopback.py $client $origin
+          exit $LASTEXITCODE
       - uses: actions/upload-artifact@v4
         with:
-          name: desktop-preview
-          path: ${{ runner.temp }}/ChronoMorph-desktop.png
+          name: windows-release
+          path: |
+            ${{ runner.temp }}/ChronoMorph-desktop.png
+            ${{ runner.temp }}/chronomorph-windows-amd64.zip
           if-no-files-found: error
   reality:
     runs-on: ubuntu-latest
@@ -47,9 +76,9 @@ jobs:
     strategy:
       matrix:
         include:
-          - {os: linux, arch: amd64, suffix: ''}
-          - {os: linux, arch: arm64, suffix: ''}
-          - {os: windows, arch: amd64, suffix: '.exe'}
+          - {os: linux, arch: amd64}
+          - {os: linux, arch: arm64}
+          - {os: windows, arch: amd64}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
@@ -67,15 +96,8 @@ jobs:
           GOOS: ${{ matrix.os }}
           GOARCH: ${{ matrix.arch }}
           CGO_ENABLED: '0'
-          SUFFIX: ${{ matrix.suffix }}
-        run: |
-          mkdir -p upstream-xray/cmbridge/wire bridge
-          cp integrations/reality/main.go upstream-xray/cmbridge/
-          cp internal/bridgeconfig/config.go upstream-xray/cmbridge/wire/
-          cd upstream-xray
-          go build -mod=readonly -tags cm_xray -trimpath -buildvcs=false -ldflags='-s -w' -o "../bridge/cm-reality$SUFFIX" ./cmbridge
-          cp LICENSE ../bridge/Xray-LICENSE.txt
-          cp "$(go list -mod=readonly -m -f '{{.Dir}}' github.com/xtls/reality)/LICENSE" ../bridge/REALITY-LICENSE.txt
+        shell: pwsh
+        run: ./scripts/build-reality.ps1 -SourceDir upstream-xray -OutputDir bridge
       - uses: actions/upload-artifact@v4
         with:
           name: reality-${{ matrix.os }}-${{ matrix.arch }}
@@ -99,11 +121,11 @@ jobs:
           bash tests/debian-install.sh
       - uses: actions/download-artifact@v4
         with:
-          name: desktop-preview
+          name: windows-release
           path: release
       - uses: actions/download-artifact@v4
         with:
-          pattern: reality-*
+          pattern: reality-linux-*
           path: bridges
       - name: Build and verify release files
         run: |
@@ -114,7 +136,6 @@ jobs:
           build() {
             GOOS="$1" GOARCH="$2" go build -mod=readonly -trimpath -buildvcs=false -ldflags="$flags ${4:-}" -o "release/$3" .
           }
-          build windows amd64 ChronoMorph-windows-amd64.exe -H=windowsgui
           build linux amd64 chronomorph-linux-amd64
           build linux arm64 chronomorph-linux-arm64
           build android arm64 chronomorph_android_arm64
@@ -131,10 +152,6 @@ jobs:
           go build -trimpath -o "$RUNNER_TEMP/test-origin" tests/testdata/reality_origin.go
           python3 tests/reality_loopback.py release/chronomorph-linux-amd64 "$RUNNER_TEMP/test-origin"
           rm release/cm-reality
-          winpkg=packages/chronomorph-windows-amd64
-          mkdir -p "$winpkg"
-          cp bridges/reality-windows-amd64/* release/ChronoMorph-windows-amd64.exe "$winpkg/"
-          (cd "$winpkg" && sha256sum *.exe *LICENSE.txt > SHA256SUMS.txt && zip -q "$GITHUB_WORKSPACE/release/chronomorph-windows-amd64.zip" *)
           cp cm.sh setup_win.ps1 uninstall_win.ps1 client.example.json release/
           for arch in amd64 arm64; do
             pkg="chronomorph-debian-$arch"
@@ -155,6 +172,13 @@ jobs:
           files: release/*
           fail_on_unmatched_files: true
           generate_release_notes: true
+      - name: Verify the published Windows ZIP
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          published=$(mktemp -d)
+          gh release download "$VERSION" --pattern chronomorph-windows-amd64.zip --dir "$published"
+          cmp "$published/chronomorph-windows-amd64.zip" release/chronomorph-windows-amd64.zip
       - name: Verify both published Debian packages
         env:
           GH_TOKEN: ${{ github.token }}

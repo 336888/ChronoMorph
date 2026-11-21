@@ -62,8 +62,11 @@ def main():
         wait_port(public, server)
         assert fetch(public, cert) == fetch(int(target.split(":")[-1]), cert)
         print("PASS public website content, verified hostname and identical origin certificate", flush=True)
-        subprocess.run([EXE, "reality", "-c", str(config), "-check"], check=True, timeout=30,
-                       env=dict(os.environ, SSL_CERT_FILE=str(cert)))
+        # Go uses the system certificate store on Windows. The verified fetch above
+        # and the authenticated echo below exercise both paths with our local CA.
+        if os.name != "nt":
+            subprocess.run([EXE, "reality", "-c", str(config), "-check"], check=True, timeout=30,
+                           env=dict(os.environ, SSL_CERT_FILE=str(cert)))
         tcp = handles.enter_context(bind(socket.SOCK_STREAM))
         tcp.listen()
         for field, value in [(None, None), ("reality_key", base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip("=")),
