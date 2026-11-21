@@ -3,6 +3,7 @@
   "server_ip": "",
   "master_key": "",
   "active_index": 0,
+  "tls_only": false,
   "profiles": [],
   "direct_domains": [],
   "block_domains": ["doubleclick.net", "googlesyndication.com", "google-analytics.com"]

@@ -8,7 +8,7 @@ on:
       tag:
         description: Version tag
         required: true
-        default: v1.2.3
+        default: v1.2.4
 
 permissions:
   contents: write
@@ -76,6 +76,7 @@ jobs:
           release/chronomorph-linux-amd64 version
           python3 tests/tls_loopback.py release/chronomorph-linux-amd64
           python3 tests/tls_loopback.py release/chronomorph-linux-amd64 --dual --basic
+          python3 tests/tls_loopback.py release/chronomorph-linux-amd64 --tls-only --dual --basic
           python3 tests/udp_rebind.py release/chronomorph-linux-amd64 --idle --isolate --restart
           python3 tests/udp_rebind.py release/chronomorph-linux-amd64 --first-loss --outage
           python3 tests/throughput.py release/chronomorph-linux-amd64 --transport tcp --mib 4 --runs 2 --min-mbps 20

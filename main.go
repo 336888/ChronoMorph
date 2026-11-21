@@ -38,6 +38,7 @@ const (
 
 type Config struct {
 	TLSNode
+	TLSOnly       bool          `json:"tls_only,omitempty"`
 	TLSListen     string        `json:"tls_listen,omitempty"`
 	Listen        string        `json:"listen"`
 	ServerIP      string        `json:"server_ip,omitempty"`
@@ -286,6 +287,8 @@ type ClientMux struct {
 	generation      uint64
 	dialDone        chan struct{}
 	cancelDial      context.CancelFunc
+	stopClock       context.CancelFunc
+	clockDone       chan struct{}
 	serverIP        net.IP
 	sess            *smux.Session
 	udpPath         *RTPPacketConn
@@ -497,6 +500,11 @@ func (cm *ClientMux) Close() {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	cm.closed = true
+	if cm.stopClock != nil {
+		cm.stopClock()
+		<-cm.clockDone
+		cm.stopClock = nil
+	}
 	cm.resetLocked()
 }
 
@@ -538,14 +546,12 @@ func runHeadlessClient(cfgPath string) {
 		log.Fatalf("[Client] 配置解析失败: %v", err)
 	}
 
-	if cfg.TLSPort == 0 || cfg.UDPPort != 0 {
-		go SyncTimeOffset()
-	}
-	cm, err := newNodeMux(cfg.ServerIP, cfg.MasterKey, cfg.TLSNode)
+	cm, err := cfg.nodeMux(cfg.ServerIP, cfg.MasterKey, cfg.TLSNode)
 	if err != nil {
 		log.Fatalf("[Client] 初始化失败: %v", err)
 	}
 	defer cm.Close()
+	cm.startClockSync()
 
 	router := NewRouter(cfg.DirectDomains, cfg.BlockDomains)
 	ln, err := net.Listen("tcp", cfg.Listen)

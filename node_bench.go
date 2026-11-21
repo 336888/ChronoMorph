@@ -12,6 +12,28 @@ type NodePingResult struct {
 	RTTMs int64  `json:"rtt_ms"`
 }
 
+// Register temporary probes so a live policy change can close old UDP paths.
+func (g *GUIController) newProbe(p NodeProfile) (*ClientMux, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	cm, err := g.cfg.nodeMux(p.ServerIP, p.MasterKey, p.TLSNode)
+	if err != nil {
+		return nil, err
+	}
+	if g.probes == nil {
+		g.probes = make(map[*ClientMux]struct{})
+	}
+	g.probes[cm] = struct{}{}
+	return cm, nil
+}
+
+func (g *GUIController) finishProbe(probe *ClientMux) {
+	probe.Close()
+	g.mu.Lock()
+	delete(g.probes, probe)
+	g.mu.Unlock()
+}
+
 func (g *GUIController) BenchAllProfiles() []NodePingResult {
 	g.mu.Lock()
 	profiles := append([]NodeProfile(nil), g.cfg.Profiles...)
@@ -30,9 +52,9 @@ func (g *GUIController) BenchAllProfiles() []NodePingResult {
 				r := NodePingResult{Index: i, Name: p.Name, IP: p.ServerIP, RTTMs: -1}
 				if active != nil && p.ServerIP == cfg.ServerIP && p.MasterKey == cfg.MasterKey && p.TLSNode == cfg.TLSNode {
 					r.RTTMs, _ = MeasureTunnelLatency(active)
-				} else if cm, err := newNodeMux(p.ServerIP, p.MasterKey, p.TLSNode); err == nil {
+				} else if cm, err := g.newProbe(p); err == nil {
 					r.RTTMs, _ = MeasureTunnelLatency(cm)
-					cm.Close()
+					g.finishProbe(cm)
 				}
 				results[i] = r
 			}

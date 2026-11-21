@@ -22,6 +22,7 @@ func (cm *ClientMux) logProxyFailure(err error) {
 func (g *GUIController) BuildDiagReport() string {
 	g.mu.Lock()
 	ip := g.cfg.ServerIP
+	strict := g.cfg.TLSOnly
 	listen := g.cfg.Listen
 	running := g.running
 	cm := g.cm
@@ -38,7 +39,9 @@ func (g *GUIController) BuildDiagReport() string {
 	sb.WriteString(fmt.Sprintf("Server IP    : %s\n", ip))
 	sb.WriteString(fmt.Sprintf("Listen       : %s\n", listen))
 	sb.WriteString(fmt.Sprintf("Tunnel Active: %v | SysProxy: %v | TUN: %v\n", running, sysProxy, GlobalTUN.IsActive()))
-	if udpPort != 0 {
+	if strict {
+		fmt.Fprintf(&sb, "Transport    : TLS only (configured TCP port %d)\n", tlsPort)
+	} else if udpPort != 0 {
 		fmt.Fprintf(&sb, "Transport    : Auto TCP %d / UDP %d (bulk: %s)\n", tlsPort, udpPort, cm.transportName())
 	} else if tlsPort != 0 {
 		fmt.Fprintf(&sb, "Transport    : TLS/TCP %d\n", tlsPort)

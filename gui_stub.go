@@ -9,6 +9,7 @@ type GUIController struct {
 	cfgPath    string
 	cfg        *Config
 	cm         *ClientMux
+	probes     map[*ClientMux]struct{}
 	router     *Router
 	running    bool
 	sysProxyOn bool

@@ -81,6 +81,9 @@ func (u *desktopUI) paint(dc uintptr) {
 		u.line(dc, 232, 284, 794, 284, 1, edge)
 		u.text(dc, 233, 299, 395, 27, 17, 600, fg, "登录 Windows 后启动")
 		u.text(dc, 233, 327, 418, 21, 12, 400, muted, "对当前 Windows 用户生效")
+		u.card(dc, 211, 375, 607, 85, panel)
+		u.text(dc, 233, 388, 440, 26, 17, 600, fg, "仅 TLS 传输")
+		u.text(dc, 233, 419, 445, 23, 12, 400, muted, "到节点的网页、游戏和测速流量仅走 TLS。")
 	case importPage:
 		u.card(dc, 211, 92, 607, 245, panel)
 		u.text(dc, 230, 107, 540, 32, 15, 500, fg, "粘贴服务端生成的 cm+auto:// 双协议链接，也支持旧链接")
@@ -120,7 +123,7 @@ func (u *desktopUI) paintButton(item *drawItem) {
 		fill, stroke, ink = mint, mint, 0x082823
 	} else if id == pingAction {
 		fill, stroke, ink = panel, panel, blue
-	} else if (id == proxyAction && u.proxy) || (id == autoAction && u.auto) || (id == tunAction && u.tun) {
+	} else if (id == proxyAction && u.proxy) || (id == autoAction && u.auto) || (id == tlsOnlyAction && u.tlsOnly) || (id == tunAction && u.tun) {
 		fill, stroke, ink = 0x17403d, 0x2d5d52, mint
 	}
 	if pressed {

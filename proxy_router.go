@@ -3,12 +3,14 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -113,7 +115,7 @@ func (r *Router) ShouldDirect(target string) bool {
 	return false
 }
 
-func dialWithRouting(target string, cm *ClientMux, router *Router) (io.ReadWriteCloser, error) {
+func dialWithRouting(target string, cm *ClientMux, router *Router) (net.Conn, error) {
 	if router.ShouldBlock(target) {
 		return nil, fmt.Errorf("blocked: %s", target)
 	}
@@ -201,7 +203,7 @@ func handleMixedProxy(c net.Conn, cm *ClientMux, router *Router) {
 	if first[0] == 0x05 {
 		handleSocks5Mixed(c, br, cm, router)
 	} else {
-		handleHTTPMixed(c, br, cm, router)
+		handleHTTPMixed(c, cm, router)
 	}
 }
 
@@ -285,33 +287,105 @@ func handleSocks5Mixed(c net.Conn, br *bufio.Reader, cm *ClientMux, router *Rout
 	pipeBidirectional(c, remote)
 }
 
-func handleHTTPMixed(c net.Conn, br *bufio.Reader, cm *ClientMux, router *Router) {
-	req, err := http.ReadRequest(br)
-	if err != nil {
-		return
+// The mixed listener already accepted and classified this socket. Let
+// net/http serve every request on it, including keep-alive and upgrades.
+type httpProxySocket struct {
+	net.Conn
+	accepted bool
+	done     chan struct{}
+	once     sync.Once
+}
+
+func (s *httpProxySocket) Accept() (net.Conn, error) {
+	if s.accepted {
+		<-s.done
+		return nil, net.ErrClosed
 	}
-	target := req.Host
-	if !strings.Contains(target, ":") {
-		if req.Method == http.MethodConnect {
-			target += ":443"
-		} else {
-			target += ":80"
-		}
+	s.accepted = true
+	return s, nil
+}
+func (s *httpProxySocket) Addr() net.Addr    { return s.LocalAddr() }
+func (s *httpProxySocket) CloseWrite() error { return closeWrite(s.Conn) }
+func (s *httpProxySocket) Close() (err error) {
+	s.once.Do(func() { err = s.Conn.Close(); close(s.done) })
+	return err
+}
+
+func handleHTTPMixed(c net.Conn, cm *ClientMux, router *Router) {
+	transport := &http.Transport{
+		DisableCompression: true,
+		MaxIdleConns:       4,
+		IdleConnTimeout:    30 * time.Second,
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			return dialWithRouting(address, cm, nil)
+		},
 	}
-	remote, err := dialWithRouting(target, cm, router)
-	if err != nil {
+	defer transport.CloseIdleConnections()
+	// Separate pools so a routing-mode change cannot reuse an old direct
+	// connection for a request that now belongs in the tunnel.
+	direct := transport.Clone()
+	direct.DialContext = (&net.Dialer{Timeout: 8 * time.Second}).DialContext
+	defer direct.CloseIdleConnections()
+	fail := func(w http.ResponseWriter, _ *http.Request, err error) {
 		if cm != nil {
 			cm.logProxyFailure(err)
 		}
-		_, _ = c.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
-		return
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 	}
-	defer remote.Close()
-
-	if req.Method == http.MethodConnect {
-		_, _ = c.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
-	} else {
-		_ = req.Write(remote)
+	forward := &httputil.ReverseProxy{
+		Transport: transport, ErrorHandler: fail,
+		Rewrite: func(r *httputil.ProxyRequest) {
+			// ReverseProxy strips proxy credentials, hop-by-hop fields and
+			// forwarding metadata on every request. Preserve origin credentials.
+			r.Out.URL.Scheme, r.Out.URL.Host = "http", r.In.Host
+		},
 	}
-	pipeBidirectional(c, remote)
+	directForward := *forward
+	directForward.Transport = direct
+	server := http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodConnect {
+			if req.URL.Scheme != "" && req.URL.Scheme != "http" {
+				http.Error(w, "Use CONNECT for TLS", http.StatusBadRequest)
+				return
+			}
+			if req.URL.Host == "" {
+				req.URL.Host = req.Host
+			}
+			host := req.URL.Hostname()
+			if router.ShouldBlock(host) {
+				fail(w, req, fmt.Errorf("blocked: %s", req.Host))
+			} else if router.ShouldDirect(host) {
+				directForward.ServeHTTP(w, req)
+			} else {
+				forward.ServeHTTP(w, req)
+			}
+			return
+		}
+		target := req.Host
+		if _, _, err := net.SplitHostPort(target); err != nil {
+			target = net.JoinHostPort(strings.Trim(target, "[]"), "443")
+		}
+		remote, err := dialWithRouting(target, cm, router)
+		if err != nil {
+			fail(w, req, err)
+			return
+		}
+		defer remote.Close()
+		client, rw, err := http.NewResponseController(w).Hijack()
+		if err != nil {
+			return
+		}
+		defer client.Close()
+		if _, err = rw.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
+			return
+		}
+		if err = rw.Flush(); err != nil {
+			return
+		}
+		pipeBidirectional(&bufferedProxyConn{Conn: client, reader: rw.Reader}, remote)
+	})}
+	_ = server.Serve(&httpProxySocket{Conn: c, done: make(chan struct{})})
 }

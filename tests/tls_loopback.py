@@ -145,6 +145,13 @@ with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as resources:
     key = subprocess.check_output([EXE, "keygen"], text=True).split()[-1]
     pin = subprocess.check_output([EXE, "tls-identity", "-create", "-dir", tmp], text=True).strip()
     tls_port, client_port = free_port(), free_port()
+    strict = "--tls-only" in sys.argv
+    if strict:
+        # Observe the node's advertised UDP port, including before TLS is ready.
+        observer = resources.enter_context(bind(socket.SOCK_DGRAM))
+        advertised_udp = observer.getsockname()[1]
+    else:
+        advertised_udp = tls_port if "--dual" in sys.argv else 0
     while client_port == tls_port:
         client_port = free_port()
     server_cfg = directory / "server.json"
@@ -154,7 +161,7 @@ with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as resources:
     client_cfg = directory / "client.json"
     client_cfg.write_text(json.dumps({"listen": f"{IP}:{client_port}", "server_ip": IP,
                                       "master_key": key, "tls_port": tls_port, "tls_pin": pin,
-                                      "udp_port": tls_port if "--dual" in sys.argv else 0}))
+                                      "udp_port": advertised_udp, "tls_only": strict}))
     server = subprocess.Popen([SERVER_EXE, "server", "-c", str(server_cfg)])
     resources.callback(stop, server)
     client = subprocess.Popen([EXE, "client", "-c", str(client_cfg)])
@@ -210,8 +217,14 @@ with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as resources:
         print("PASS client half-close followed by complete delayed response", flush=True)
 
     stop(server)
-    if "--dual" in sys.argv:
+    if "--dual" in sys.argv and not strict:
         exercise_dual_failover(resources, server_cfg, tls_port, client_port, key, tcp)
+    if strict:
+        # Keep TCP open past the automatic 250 ms fallback threshold.
+        blackhole = resources.enter_context(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
+        blackhole.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        blackhole.bind((IP, tls_port))
+        blackhole.listen()
     assert tcp_request(client_port, tcp.getsockname()[1]) != 0
     tcp.settimeout(0.3)
     try:
@@ -222,3 +235,16 @@ with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as resources:
         conn.close()
         raise AssertionError("client connected directly to the origin after TLS failed")
     print("PASS TLS outage refused the request without reaching the origin directly")
+
+    if strict:
+        with socks_connect(client_port) as control:
+            control.sendall(b"\x05\x03\x00\x01" + b"\0" * 6)
+            assert read(control, 10)[1] != 0, "game association accepted during TLS outage"
+        observer.settimeout(0.35)
+        try:
+            data, _ = observer.recvfrom(65535)
+        except socket.timeout:
+            pass
+        else:
+            raise AssertionError(f"TLS-only client sent a {len(data)}-byte UDP packet to the node")
+        print("PASS no node UDP packets during browsing, game relay or TLS outage")

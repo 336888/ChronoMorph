@@ -21,6 +21,7 @@ type GUIController struct {
 	cfgPath    string
 	cfg        *Config
 	cm         *ClientMux
+	probes     map[*ClientMux]struct{}
 	ln         net.Listener
 	router     *Router
 	running    bool
@@ -38,7 +39,7 @@ func (g *GUIController) startTunnelLocked(cfg *Config, save bool) error {
 	if g.running {
 		return nil
 	}
-	cm, err := newNodeMux(cfg.ServerIP, cfg.MasterKey, cfg.TLSNode)
+	cm, err := cfg.nodeMux(cfg.ServerIP, cfg.MasterKey, cfg.TLSNode)
 	if err != nil {
 		return err
 	}
@@ -59,9 +60,7 @@ func (g *GUIController) startTunnelLocked(cfg *Config, save bool) error {
 		}
 	}
 	g.cfg = cfg
-	if cm.packetEngine != nil {
-		go SyncTimeOffset()
-	}
+	cm.startClockSync()
 	g.cm = cm
 	g.ln = ln
 	g.running = true
@@ -208,6 +207,7 @@ func RunWindowsGUI(cfgPath string) {
 		resp := map[string]any{
 			"version":       AppVersion,
 			"tls_port":      ctrl.cfg.TLSPort,
+			"tls_only":      ctrl.cfg.TLSOnly,
 			"udp_port":      ctrl.cfg.UDPPort,
 			"transport":     ctrl.cm.transportName(),
 			"running":       ctrl.running,

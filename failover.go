@@ -74,20 +74,21 @@ func (g *GUIController) tryStandby(stop <-chan struct{}, active *ClientMux, snap
 		if p.ServerIP == snapshot.ServerIP && p.MasterKey == snapshot.MasterKey && p.TLSNode == snapshot.TLSNode {
 			continue
 		}
-		probe, err := newNodeMux(p.ServerIP, p.MasterKey, p.TLSNode)
+		probe, err := g.newProbe(p)
 		if err != nil {
 			continue
 		}
 		if _, err := MeasureTunnelLatency(probe); err != nil {
-			probe.Close()
+			g.finishProbe(probe)
 			continue
 		}
 		// The active node may have recovered while the other node was probed.
 		if nodeReachable(active) {
-			probe.Close()
+			g.finishProbe(probe)
 			return
 		}
 		g.mu.Lock()
+		delete(g.probes, probe)
 		if !g.running || g.cm != active || g.cfg != snapshot || GlobalTUN.IsActive() {
 			g.mu.Unlock()
 			probe.Close()

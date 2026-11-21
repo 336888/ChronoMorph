@@ -16,8 +16,8 @@ func (g *GUIController) StartTunnelWatchdog(stopCh <-chan struct{}) {
 				cm, running := g.cm, g.running
 				g.mu.Unlock()
 				if cm != nil && running {
-					if now.Sub(last) > 15*time.Second && cm.packetEngine != nil {
-						go SyncTimeOffset()
+					if now.Sub(last) > 15*time.Second {
+						cm.startClockSync()
 					}
 					// Test and remove the same closed session under one lock.
 					// A delayed tick alone says nothing about transport health.

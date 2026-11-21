@@ -165,6 +165,11 @@ func TestWindowsGUIProcess(t *testing.T) {
 		return windows.UTF16ToString(b[:])
 	}
 	wait("import did not select the dual node", func() bool { return uc("IsWindowVisible", toggle) != 0 && controlText(toggle) == "启动连接" })
+	click(navPrefs)
+	click(tlsOnlyAction)
+	policy := uc("GetDlgItem", native, tlsOnlyAction)
+	wait("TLS-only preference was not applied", func() bool { return controlText(policy) == "已开启" })
+	click(navHome)
 	click(toggleAction)
 	wait("native start did not enable the local listener", func() bool { return controlText(toggle) == "断开连接" })
 	click(pingAction)

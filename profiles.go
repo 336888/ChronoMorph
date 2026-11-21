@@ -14,6 +14,38 @@ type NodeProfile struct {
 	MasterKey string `json:"master_key"`
 }
 
+// Apply the local transport preference to a copy of the imported endpoint.
+func (cfg *Config) nodeMux(ip, key string, node TLSNode) (*ClientMux, error) {
+	if cfg.TLSOnly {
+		if node.TLSPort == 0 {
+			return nil, fmt.Errorf("仅 TLS 模式需要带证书指纹的节点，请导入 cm+auto:// 或 cm+tls:// 链接")
+		}
+		node.UDPPort = 0
+	}
+	return newNodeMux(ip, key, node)
+}
+
+func (g *GUIController) setTLSOnly(enabled bool) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.cfg.TLSOnly == enabled {
+		return nil
+	}
+	cfg := *g.cfg
+	cfg.TLSOnly = enabled
+	if err := g.useConfigLocked(&cfg); err != nil {
+		return err
+	}
+	if enabled {
+		for probe := range g.probes {
+			if probe.packetEngine != nil {
+				probe.Close()
+			}
+		}
+	}
+	return nil
+}
+
 func (p NodeProfile) selectedBy(cfg *Config) bool {
 	return p.ServerIP == cfg.ServerIP && p.MasterKey == cfg.MasterKey && p.TLSNode == cfg.TLSNode
 }
@@ -101,14 +133,14 @@ func (g *GUIController) SwitchProfile(idx int) error {
 
 // Retain the local listener and the OS proxy settings during a profile change.
 func (g *GUIController) useConfigLocked(cfg *Config) error {
-	changed := g.cfg.ServerIP != cfg.ServerIP || g.cfg.MasterKey != cfg.MasterKey || g.cfg.TLSNode != cfg.TLSNode
+	changed := g.cfg.ServerIP != cfg.ServerIP || g.cfg.MasterKey != cfg.MasterKey || g.cfg.TLSNode != cfg.TLSNode || g.cfg.TLSOnly != cfg.TLSOnly
 	var next *ClientMux
 	if changed && g.running {
 		if GlobalTUN.IsActive() {
-			return fmt.Errorf("切换节点前请先关闭 TUN")
+			return fmt.Errorf("请先关闭 TUN，再切换节点或传输模式")
 		}
 		var err error
-		next, err = newNodeMux(cfg.ServerIP, cfg.MasterKey, cfg.TLSNode)
+		next, err = cfg.nodeMux(cfg.ServerIP, cfg.MasterKey, cfg.TLSNode)
 		if err != nil {
 			return err
 		}
@@ -129,9 +161,7 @@ func (g *GUIController) installConfigLocked(cfg *Config, next *ClientMux) error 
 		old := g.cm
 		g.cm = next
 		old.Close()
-		if next.packetEngine != nil {
-			go SyncTimeOffset()
-		}
+		next.startClockSync()
 	}
 	return nil
 }

@@ -12,6 +12,14 @@ v1.1.1 客户端将 SOCKS5 UDP 游戏和语音放在独立传输连接上。第�
 
 ChronoMorph 借鉴 Hysteria 2 区分可靠流与应用数据报的思路。当前 UDP 应用数据仍通过 KCP 或 TLS 的可靠传输转发，丢包时本条连接仍可能等待重传。协议细节见 [Hysteria 2 官方规范](https://v2.hysteria.network/docs/developers/Protocol/)。
 
+## 仅 TLS 传输
+
+Windows 设置页可打开「仅 TLS 传输」。现有 `cm+auto://` 和 `cm+tls://` 都可直接使用，旧 `cm://` 节点需从服务端菜单 4 重新导出双协议链接。命令行客户端可在 `client.json` 中设置 `"tls_only": true`。设置只保存在本机，默认关闭，分享链接保留原始端口与证书指纹。当前使用纯 UDP 节点时，请先导入双协议链接，再打开开关。
+
+开启后网页、游戏和节点测速到节点的连接都只用 TLS/TCP。TLS 失败时返回错误，旧 UDP 节点不会参与测速；游戏的应用 UDP 数据仍能通过 SOCKS5 转发。在丢包线路上，游戏延迟可能因 TCP 重传而升高。切换传输会重建当前隧道，已开启 TUN 时请先关闭 TUN。
+
+此开关只控制进入 ChronoMorph 后到节点的传输。目标站点仍能看到出口 IP，网络观察者仍能看到节点 IP、流量大小和时序。系统代理、全局/智能分流与 TUN 的覆盖范围由各自设置决定。
+
 ## TLS 握手与升级
 
 从 v1.2.2 开始，客户端在 TLS 1.3 的加密部分交换应用版本信息。外部仍可观察到节点 IP、端口和流量特征。升级时先用新版离线包更新 Debian，再从托盘彻底退出并替换 Windows EXE。当前 `cm+auto://` 和 `cm+tls://` 链接可以继续使用。新版客户端可以连接 v1.2.1 服务端，双方均升级后会使用支持大窗口的复用模式。
@@ -34,7 +42,7 @@ python3 tests/throughput.py ./chronomorph-linux-amd64 --transport tcp --rtt 200 
 
 ## 快速开始
 
-1. **推送到 GitHub 自动编译**：在 Actions 的 Release ChronoMorph 页面手动指定版本，或推送标签 `git tag v1.2.3 && git push origin v1.2.3`，在 Releases 页面下载四端产物。
+1. **推送到 GitHub 自动编译**：在 Actions 的 Release ChronoMorph 页面手动指定版本，或推送标签 `git tag v1.2.4 && git push origin v1.2.4`，在 Releases 页面下载四端产物。
 2. **Debian 服务端部署**：按菜单放行双协议节点的 TCP 和 UDP 端口，从 Release 下载 `chronomorph-debian-amd64.tar.gz`（x86_64）或 `chronomorph-debian-arm64.tar.gz`（aarch64）。解压并进入同名目录，运行 `sudo bash cm.sh`，选 1 安装或升级。离线包含服务端程序，首次安装系统依赖仍使用 apt，后续输入 `cm` 唤出管理菜单。
 3. **Windows 客户端**：双击 Release 中的 `ChronoMorph-windows-amd64.exe` 打开原生桌面窗口，在「导入节点」中粘贴分享链接。最小化或关闭窗口会收起到托盘，再次双击 EXE 或选择托盘「打开主窗口」即可恢复。退出请选择托盘「彻底退出」。如需 TUN 虚拟网卡，将 `wintun.dll` 放至同目录并以管理员运行。
 4. **Android 客户端**：提供 ARM64 命令行程序。在可执行目录准备好 `client.json` 后，运行 `chmod +x chronomorph_android_arm64 && ./chronomorph_android_arm64 client -c client.json`，默认监听 `127.0.0.1:1080`，接入 Mihomo/Clash 的 `socks5` 节点（并在规则顶部放行 VPS IP 直连）。

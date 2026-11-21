@@ -53,6 +53,7 @@ const (
 	autoAction
 	copyLog
 	deleteNode
+	tlsOnlyAction
 )
 const (
 	nodesList = 200 + iota
@@ -88,7 +89,7 @@ type desktopUI struct {
 	busy                                              bool
 	message                                           string
 	isError                                           bool
-	running, proxy, global, tun, auto                 bool
+	running, proxy, global, tun, auto, tlsOnly        bool
 	ip, listen, nodeName                              string
 	tlsPort, udpPort                                  int
 	current                                           *ClientMux
@@ -142,6 +143,7 @@ func (u *desktopUI) setupControls() {
 	u.button(saveListen, prefsPage, 644, 138, 144, 39, "保存监听地址")
 	u.button(tunAction, prefsPage, 685, 224, 104, 36, "开启 TUN")
 	u.button(autoAction, prefsPage, 685, 302, 104, 36, "开启")
+	u.button(tlsOnlyAction, prefsPage, 685, 398, 104, 36, "开启")
 	u.input(linkEdit, importPage, 224, 151, 563, 85, "EDIT", 0x4|0x40|0x200000)
 	u.button(saveImport, importPage, 224, 262, 130, 40, "导入并使用")
 	u.button(pasteImport, importPage, 365, 262, 140, 40, "从剪贴板粘贴")
@@ -197,6 +199,7 @@ func (u *desktopUI) refresh() {
 	u.running, u.proxy, u.global = g.running, g.sysProxyOn, g.router.IsGlobalMode()
 	u.ip, u.listen, u.tlsPort, u.udpPort = g.cfg.ServerIP, g.cfg.Listen, g.cfg.TLSPort, g.cfg.UDPPort
 	u.profiles = append(u.profiles[:0], g.cfg.Profiles...)
+	u.tlsOnly = g.cfg.TLSOnly
 	u.active = g.cfg.ActiveIndex
 	u.nodeName = ""
 	if u.active >= 0 && u.active < len(u.profiles) && u.profiles[u.active].ServerIP == u.ip {
@@ -227,6 +230,7 @@ func (u *desktopUI) refresh() {
 	u.label(modeAction, mode)
 	u.label(tunAction, onLabel(u.tun))
 	u.label(autoAction, onLabel(u.auto))
+	u.label(tlsOnlyAction, onLabel(u.tlsOnly))
 	if u.page == nodesPage {
 		enable := uintptr(0)
 		if len(u.profiles) > 0 {
@@ -240,7 +244,9 @@ func (u *desktopUI) refresh() {
 				name = p.ServerIP
 			}
 			t := "UDP"
-			if p.UDPPort != 0 {
+			if u.tlsOnly && p.TLSPort == 0 {
+				t = "仅 UDP · 此模式不可用"
+			} else if p.UDPPort != 0 && !u.tlsOnly {
 				t = fmt.Sprintf("自动 · TCP %d / UDP %d", p.TLSPort, p.UDPPort)
 			} else if p.TLSPort != 0 {
 				t = "TLS/TCP " + strconv.Itoa(p.TLSPort)
@@ -468,6 +474,9 @@ func (u *desktopUI) command(id int) {
 			}
 			return desktopResult{err: GlobalTUN.StartTUN(g.proxyAddressLocked(), g.cfg.ServerIP, g.cm)}
 		})
+	case tlsOnlyAction:
+		enable := !u.tlsOnly
+		u.work(func() desktopResult { return desktopResult{err: g.setTLSOnly(enable)} })
 	case autoAction:
 		u.work(func() desktopResult { return desktopResult{err: SetAutoStart(!IsAutoStartEnabled())} })
 	case copyLog:
@@ -524,6 +533,12 @@ func (u *desktopUI) copy(s string) error {
 func (u *desktopUI) transport() string {
 	if u.ip == "" {
 		return "尚未配置节点"
+	}
+	if u.tlsOnly {
+		if u.tlsPort == 0 {
+			return "仅 TLS · 请导入支持 TLS 的节点"
+		}
+		return fmt.Sprintf("仅 TLS 1.3 / TCP · %s", net.JoinHostPort(u.ip, strconv.Itoa(u.tlsPort)))
 	}
 	if u.udpPort != 0 {
 		return "TCP + UDP 自动 · 网页通道 " + u.current.transportName()
