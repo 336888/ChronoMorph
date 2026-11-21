@@ -52,10 +52,22 @@ func RunTray(ctrl *GUIController, showWindow, onExit func()) {
 				}
 			}()
 		}
+		mQuit := systray.AddMenuItem("彻底退出", "关闭隧道并还原系统代理")
+		lastLanguage := ""
 		refreshQuick := func() {
 			ctrl.mu.Lock()
 			cfg := ctrl.cfg
 			ctrl.mu.Unlock()
+			lang := uiLanguage(cfg.networkOptions().Language)
+			if lang != lastLanguage {
+				lastLanguage = lang
+				for m, s := range map[*systray.MenuItem]string{mOpen: "打开主窗口", mToggle: "连接 / 断开隧道", mMode: "切换路由模式 (分流/全局)", mBest: "自动优选最快节点", quickMenu: "快捷节点", mQuit: "彻底退出"} {
+					if lang == "en" {
+						s = englishLabels[s]
+					}
+					m.SetTitle(s)
+				}
+			}
 			n := min(len(cfg.Profiles), max(0, cfg.networkOptions().Quick), len(slots))
 			for i := range slots {
 				s := &slots[i]
@@ -80,7 +92,6 @@ func RunTray(ctrl *GUIController, showWindow, onExit func()) {
 			}
 		}
 		refreshQuick()
-		mQuit := systray.AddMenuItem("彻底退出", "关闭隧道并还原系统代理")
 
 		go func() {
 			ticker := time.NewTicker(2 * time.Second)

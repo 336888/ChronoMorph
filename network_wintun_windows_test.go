@@ -37,7 +37,7 @@ func TestWintunSplitDNSAndEcho(t *testing.T) {
 			break
 		}
 		if time.Now().After(end) {
-			t.Fatal("delayed TUN echo", ms, e)
+			t.Fatal("delayed TUN echo", ms, e, GlobalTUN.diagnostics())
 		}
 		time.Sleep(100 * time.Millisecond)
 	}

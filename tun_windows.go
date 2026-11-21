@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/netip"
@@ -176,7 +177,13 @@ func (t *TUNManager) start(proxyAddr string, nodes []*ClientMux, router *Router,
 	if block6 {
 		transport = ipv4Handler{handler}
 	}
-	link := newEchoLink(dev, opts.Echo, time.Duration(opts.EchoDelay)*time.Millisecond, block6)
+	writer, ok := dev.(io.Writer)
+	if !ok {
+		dev.Close()
+		handler.Close()
+		return fmt.Errorf("TUN 缺少数据包写接口")
+	}
+	link := newEchoLink(dev, writer, opts.Echo, time.Duration(opts.EchoDelay)*time.Millisecond, block6)
 	stack, err := core.CreateStack(&core.Config{LinkEndpoint: link, TransportHandler: transport})
 	if err != nil {
 		dev.Close()

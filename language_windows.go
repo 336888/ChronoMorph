@@ -3,6 +3,9 @@ package main
 import "golang.org/x/sys/windows"
 
 var englishLabels = map[string]string{
+	"打开主窗口": "Open window", "连接 / 断开隧道": "Connect / disconnect", "切换路由模式 (分流/全局)": "Switch routing mode", "自动优选最快节点": "Select fastest node", "快捷节点": "Quick profiles", "彻底退出": "Quit",
+	"尚未配置节点": "No node configured", "停止质量测试": "Stop quality test", "请先启动连接": "Connect first", "请先选择节点": "Select a node first", "已切换节点": "Node switched", "请选择快捷节点": "Select a quick profile", "MasterKey · 64 位十六进制": "MasterKey · 64 hex characters",
+	"粘贴一个节点链接，可直接复制 Debian 菜单 4 中的一整行": "Paste a share link from Debian menu 4", "可导入服务端分享链接，或手动填写 UDP 节点": "Import a share link or add a UDP node manually", "查看匹配的规则，处理误拦截": "Inspect matching rules and exceptions",
 	"连接概览":    "Overview",
 	"实时连接":    "Connections",
 	"我的节点":    "Nodes",
@@ -134,7 +137,7 @@ func (u *desktopUI) tr(s string) string {
 	}
 	return s
 }
-func (u *desktopUI) setLanguage(lang string) {
+func uiLanguage(lang string) string {
 	if lang == "system" {
 		v, _, _ := windows.NewLazySystemDLL("kernel32.dll").NewProc("GetUserDefaultUILanguage").Call()
 		lang = "en"
@@ -142,6 +145,10 @@ func (u *desktopUI) setLanguage(lang string) {
 			lang = "zh"
 		}
 	}
+	return lang
+}
+func (u *desktopUI) setLanguage(lang string) {
+	lang = uiLanguage(lang)
 	if u.language == lang {
 		return
 	}

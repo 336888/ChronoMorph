@@ -3,12 +3,14 @@ package main
 import (
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
+	"io"
 	"sync"
 	"time"
 )
 
 type echoLink struct {
 	stack.LinkEndpoint
+	reply           io.Writer
 	enabled, block6 bool
 	delay           time.Duration
 	pending         chan struct{}
@@ -16,8 +18,8 @@ type echoLink struct {
 	wait            sync.WaitGroup
 }
 
-func newEchoLink(dev stack.LinkEndpoint, enabled bool, delay time.Duration, block6 bool) *echoLink {
-	return &echoLink{LinkEndpoint: dev, enabled: enabled, delay: delay, block6: block6, pending: make(chan struct{}, 128), done: make(chan struct{})}
+func newEchoLink(dev stack.LinkEndpoint, writer io.Writer, enabled bool, delay time.Duration, block6 bool) *echoLink {
+	return &echoLink{LinkEndpoint: dev, reply: writer, enabled: enabled, delay: delay, block6: block6, pending: make(chan struct{}, 128), done: make(chan struct{})}
 }
 func (l *echoLink) stop() { close(l.done) }
 func (l *echoLink) Attach(d stack.NetworkDispatcher) {
@@ -91,8 +93,16 @@ func (d *echoDispatcher) DeliverNetworkPacket(proto tcpip.NetworkProtocolNumber,
 	if !d.l.enabled {
 		return
 	}
+	raw, ok := data.PullUp(data.Size())
+	if !ok {
+		return
+	}
+	reply := localEchoReply(raw, off)
+	if reply == nil {
+		return
+	}
 	if d.l.delay == 0 {
-		d.NetworkDispatcher.DeliverNetworkPacket(proto, pkt)
+		_, _ = d.l.reply.Write(reply)
 		return
 	}
 	select {
@@ -100,17 +110,15 @@ func (d *echoDispatcher) DeliverNetworkPacket(proto tcpip.NetworkProtocolNumber,
 	default:
 		return
 	}
-	pkt.IncRef()
 	d.l.wait.Add(1)
 	go func() {
 		defer d.l.wait.Done()
-		defer pkt.DecRef()
 		defer func() { <-d.l.pending }()
 		timer := time.NewTimer(d.l.delay)
 		defer timer.Stop()
 		select {
 		case <-timer.C:
-			d.NetworkDispatcher.DeliverNetworkPacket(proto, pkt)
+			_, _ = d.l.reply.Write(reply)
 		case <-d.l.done:
 		}
 	}()
