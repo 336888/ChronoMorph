@@ -102,3 +102,27 @@ func TestWindowsProcessRoutesAndICMP(t *testing.T) {
 	}
 	routed.Close()
 }
+
+func TestDirectIPRuleRespectsDNSAndChain(t *testing.T) {
+	router := NewRouter(nil, nil)
+	routes := newRouteIndex()
+	if err := routes.add("IP-CIDR,192.0.2.0/24,DIRECT", "test", ""); err != nil {
+		t.Fatal(err)
+	}
+	router.routes.Store(routes)
+	p := tunPolicy{opts: (&Config{}).networkOptions(), endpoint: &modeEndpoint{router: router}}
+	p.endpoint.current.Store(&ClientMux{})
+	m := &M.Metadata{Network: M.TCP, DstIP: netip.MustParseAddr("192.0.2.1"), DstPort: 443}
+	check := func(want tunPath) {
+		t.Helper()
+		if got, err := p.path(m); err != nil || got != want {
+			t.Fatalf("got %v %v, want %v", got, err, want)
+		}
+	}
+	check(pathPhysical)
+	m.DstPort = 53
+	check(pathDNS)
+	m.DstPort = 443
+	p.endpoint.current.Store(&ClientMux{entry: &ClientMux{}})
+	check(pathProxy)
+}

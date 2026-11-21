@@ -21,8 +21,20 @@ sudo bash ./cm.sh --install
 Slacker 沿用 ChronoMorph 的节点链接、客户端配置和 Debian 服务目录。Windows 升级时先从托盘退出旧版，将新版 EXE 放在原客户端目录，保留 `client.json`。
 
 - **去广告**管理域名订阅、暂停过滤、查询命中规则和维护放行名单。可直接添加 217heidai 订阅。
-- **分流规则**支持本地规则和 blackmatrix7 的 Surge 文本订阅。每行本地规则写作 `DOMAIN-SUFFIX,example.com,DIRECT`。可用动作是 DIRECT、PROXY、REJECT，可用类型是 DOMAIN、DOMAIN-SUFFIX、DOMAIN-KEYWORD、IP-CIDR 和 IP-CIDR6。每行订阅写作 `DIRECT https://…/xxx.list`。本地规则优先，首条命中生效。保存并更新后可测试域名或 IP。更新失败保留已有规则，重启可从缓存载入。
+- **分流规则**支持本地规则和 blackmatrix7 的 Surge 文本订阅。每行本地规则写作 `DOMAIN-SUFFIX,example.com,DIRECT`。可用动作是 DIRECT、PROXY、REJECT，支持 DOMAIN、DOMAIN-SUFFIX、DOMAIN-KEYWORD、IP-CIDR、IP-CIDR6、GEOSITE、GEOIP 和 IP-ASN。每行订阅写作 `DIRECT https://…/xxx.list`。本地规则优先，首条命中生效。保存并更新后可测试域名或 IP。更新失败保留已有规则，重启可从缓存载入。
 - **进程模式**可以分别创建进程规则与 IP 路由表。填写备注和文件名，输入或扫描 EXE，或选择某个目录。两侧列表分别指定接管与直连，直连例外优先。点击「验证」和「保存模式」，再选中并点击「使用选中模式」。重新开启 TUN 后生效。回环选项处理已接入本地 HTTP/SOCKS 代理的 TCP 请求，Windows 原生本机回环不经过 Wintun。
+
+打开「分流规则 → 添加 GEO 示例」可以填入以下三条规则，检查顺序后点击「保存并更新规则」。Slacker 从 MetaCubeX 的 meta-rules-dat 下载规则引用的数据库，更新成功后支持离线重启。
+
+| 示例规则 | 匹配条件 | 动作 |
+| --- | --- | --- |
+| `GEOSITE,cn,DIRECT` | 目标域名属于 geosite.dat 的 cn 分类 | 直连 |
+| `GEOIP,cn,DIRECT` | 目标 IPv4 或 IPv6 地址在 geoip.metadb 中带 cn 标签 | 直连 |
+| `IP-ASN,13335,PROXY` | 目标 IP 在 GeoLite2-ASN.mmdb 中属于 AS13335 | 代理 |
+
+精确域名例外请放在分类规则上方。GeoSite 支持带属性的分类（如 `组名@属性`）。IP 规则只匹配已知的目标地址，域名匹配不会触发额外 DNS 查询。也可把这三个文件的 MetaCubeX 官方 latest 下载链接逐行粘贴到订阅框，单独的数据库链接仅加载数据，流量动作由规则决定。
+
+Windows 去广告和分流规则共用 `%LOCALAPPDATA%\Slacker\rules.db`，按配置文件路径隔离。升级后首次读取有效的旧缓存会迁移到数据库，旧目录保留。Linux 可用 `./slacker rules -c client.json -update -test www.baidu.com` 更新并查询，省略 `-update` 即可离线查询。
 
 智能分流按目标域名或 IP 判断。TUN 收到的普通 IP 数据包按可见 IP 判断。全局代理及串联节点继续通过代理转发，拦截规则仍然有效。
 

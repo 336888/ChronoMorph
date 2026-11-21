@@ -71,11 +71,20 @@ func main() {
 			RunWindowsGUI("client.json")
 			return
 		}
-		fmt.Println("用法: slacker <server | client | keygen | version> [-c config.json]")
+		fmt.Println("用法: slacker <server | client | rules | keygen | version> [-c config.json]")
 		os.Exit(1)
 	}
 
 	switch os.Args[1] {
+	case "rules":
+		fs := flag.NewFlagSet("rules", flag.ExitOnError)
+		path := fs.String("c", "client.json", "客户端配置")
+		update := fs.Bool("update", false, "更新分流规则和数据库")
+		target := fs.String("test", "", "测试域名或 IP")
+		_ = fs.Parse(os.Args[2:])
+		if err := routingCommand(*path, *update, *target); err != nil {
+			log.Fatal(err)
+		}
 	case "licenses":
 		if err := printLicenses(os.Stdout); err != nil {
 			log.Fatal(err)
@@ -690,7 +699,9 @@ func runHeadlessClient(cfgPath string) {
 	cm.startClockSync()
 
 	router := cfg.newRouter()
-	router.restoreRoutes(cfgPath, cfg.Routing)
+	if err := router.restoreRoutes(cfgPath, cfg.Routing); err != nil {
+		log.Fatalf("[分流规则] %v", err)
+	}
 	if len(cfg.AdSubscriptions) > 0 {
 		sources, e := adSources(cfg.AdSubscriptions)
 		if e != nil {

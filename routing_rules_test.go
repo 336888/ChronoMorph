@@ -9,9 +9,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSlackerRoutingFeedsAndOfflineCache(t *testing.T) {
+	isolateRuleCache(t)
 	var body = "DOMAIN-SUFFIX,example.org\nDOMAIN,other.test\nIP-CIDR,192.0.2.0/24,no-resolve\nIP-CIDR6,2001:db8::/32,no-resolve\nUSER-AGENT,unsupported*\n.domainset.example\nexact.host.test\n"
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte(body)) }))
 	defer server.Close()
@@ -43,7 +45,8 @@ func TestSlackerRoutingFeedsAndOfflineCache(t *testing.T) {
 	if _, _, err = buildRouting(context.Background(), path, s, false, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err = os.WriteFile(filepath.Join(filepath.Dir(path), "route-cache", cache+".txt"), []byte("tampered"), 0600); err != nil {
+	assertNoCacheDirs(t, path)
+	if err = writeRuleCache(path, routingCache, []cachedRule{{key: cache + ".txt", data: []byte("tampered"), modified: time.Now()}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err = buildRouting(context.Background(), path, s, false, nil); err == nil {

@@ -60,6 +60,7 @@ const (
 	modeUpstream
 	modeDelay
 	routeLocalSave
+	routeGeoPreset
 )
 
 var navigation = []struct {
@@ -126,6 +127,7 @@ func (u *desktopUI) setupRuleControls() {
 		uc("SendMessageW", u.controls[v.id].h, 0xc5, 1<<20, 0)
 	}
 	u.input(routeTarget, routesPage, 231, 425, 399, 32, "EDIT", 0x80)
+	u.button(routeGeoPreset, routesPage, 655, 97, 141, 30, "添加 GEO 示例")
 	u.button(routePreset, routesPage, 231, 348, 209, 34, "添加 Apple 直连订阅")
 	u.button(routeLocalSave, routesPage, 453, 348, 156, 34, "保存本地规则")
 	u.button(routeSave, routesPage, 624, 348, 172, 34, "保存并更新规则")
@@ -167,9 +169,9 @@ func (u *desktopUI) paintRulePage(dc uintptr) {
 	switch u.page {
 	case routesPage:
 		u.card(dc, 211, 92, 607, 151, panel)
-		txt(231, 100, 565, "本地规则 · 类型,匹配值,DIRECT / PROXY / REJECT")
+		txt(231, 100, 418, "本地规则 · 类型,匹配值,DIRECT / PROXY / REJECT")
 		u.card(dc, 211, 247, 607, 148, panel)
-		txt(231, 249, 565, "订阅 · 每行填写动作、空格和 HTTPS 规则直链")
+		txt(231, 249, 565, "订阅 · 每行填写动作和规则直链，GEO 数据库直接粘贴链接")
 		u.card(dc, 211, 403, 607, 75, panel)
 	case modesPage:
 		u.card(dc, 211, 92, 607, 193, panel)
@@ -328,7 +330,7 @@ func chooseModeDir(hwnd uintptr) (string, error) {
 	return windows.UTF16ToString(path[:]), nil
 }
 func (u *desktopUI) ruleCommand(id int) bool {
-	if id < navRoutes || id > routeLocalSave {
+	if id < navRoutes || id > routeGeoPreset {
 		return false
 	}
 	g := u.ctrl
@@ -341,6 +343,22 @@ func (u *desktopUI) ruleCommand(id int) bool {
 		}
 	}
 	switch id {
+	case routeGeoPreset:
+		text := u.field(routeManual)
+		for _, line := range []string{"GEOSITE,cn,DIRECT", "GEOIP,cn,DIRECT", "IP-ASN,13335,PROXY"} {
+			found := false
+			for _, existing := range strings.Split(text, "\n") {
+				if strings.EqualFold(strings.TrimSpace(existing), line) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				text = strings.TrimSpace(text + "\n" + line)
+			}
+		}
+		u.setField(routeManual, text)
+		u.feedback("示例已填入。点「保存并更新规则」下载数据库。", false)
 	case routePreset:
 		u.setField(routeFeedsEdit, mergeRuleLines(u.field(routeFeedsEdit), []string{"DIRECT " + appleRouteURL}))
 	case routeSave, routeLocalSave:
@@ -355,24 +373,30 @@ func (u *desktopUI) ruleCommand(id int) bool {
 					return desktopResult{originPage: routesPage, err: fmt.Errorf("订阅地址已更改，请点「保存并更新规则」")}
 				}
 				s.Cache = previous.Cache
+				s.GeoFiles = previous.GeoFiles
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 			defer cancel()
 			idx, hash, e := buildRouting(ctx, g.cfgPath, s, refresh, routeHTTPClient())
 			count := 0
 			if e == nil {
 				s.Cache = hash
+				s.GeoFiles = idx.geo.files
 				g.mu.Lock()
 				cfg := *g.cfg
 				cfg.Routing = s
 				e = g.installConfigLocked(&cfg, nil)
 				if e == nil {
 					g.router.routes.Store(idx)
+					g.routeLoadErr = nil
 					count = idx.count
 				}
 				g.mu.Unlock()
 			}
 			msg := fmt.Sprintf("已应用 %d 条分流规则", count)
+			if idx != nil && len(idx.geo.files) > 0 {
+				msg += fmt.Sprintf("，%d 个 GEO 数据库就绪", len(idx.geo.files))
+			}
 			if idx != nil && idx.skipped > 0 {
 				msg += fmt.Sprintf("，跳过 %d 条不支持的订阅规则", idx.skipped)
 			}
