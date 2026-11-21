@@ -12,19 +12,23 @@ import (
 )
 
 type tunnelDNS struct {
-	udp       net.PacketConn
-	tcp       net.Listener
-	client    atomic.Pointer[ClientMux]
-	servers   []string
-	preferred atomic.Uint32
-	status    atomic.Pointer[string]
-	workers   chan struct{}
-	stop      chan struct{}
-	once      sync.Once
-	router    *Router
+	udp            net.PacketConn
+	tcp            net.Listener
+	client         atomic.Pointer[ClientMux]
+	servers        []string
+	china          []string
+	domains        []string
+	directDial     func(string) (net.Conn, error)
+	chinaPreferred atomic.Uint32
+	preferred      atomic.Uint32
+	status         atomic.Pointer[string]
+	workers        chan struct{}
+	stop           chan struct{}
+	once           sync.Once
+	router         *Router
 }
 
-func startTunnelDNS(addr string, cm *ClientMux, router *Router, upstreams []string) (*tunnelDNS, error) {
+func startTunnelDNS(addr string, cm *ClientMux, router *Router, upstreams []string, setup ...func(*tunnelDNS)) (*tunnelDNS, error) {
 	if len(upstreams) == 0 {
 		return nil, fmt.Errorf("缺少 DNS 上游")
 	}
@@ -38,6 +42,9 @@ func startTunnelDNS(addr string, cm *ClientMux, router *Router, upstreams []stri
 		return nil, err
 	}
 	s := &tunnelDNS{udp: udp, tcp: tcp, router: router, servers: upstreams, workers: make(chan struct{}, 64), stop: make(chan struct{})}
+	for _, configure := range setup {
+		configure(s)
+	}
 	s.client.Store(cm)
 	go s.serveUDP()
 	go s.serveTCP()
@@ -51,18 +58,36 @@ func (s *tunnelDNS) resolve(q *dns.Msg) *dns.Msg {
 	if resp := localDNSReply(s.router, q); resp != nil {
 		return resp
 	}
-	start := int(s.preferred.Load())
+	servers, pref := s.servers, &s.preferred
+	if len(s.china) > 0 && matchesSuffix(q.Question[0].Name, s.domains) {
+		servers, pref = s.china, &s.chinaPreferred
+	}
+	start := int(pref.Load())
 	var last error
-	for i := range s.servers {
-		idx := (start + i) % len(s.servers)
+	for i := range servers {
+		idx := (start + i) % len(servers)
 		cm := s.client.Load()
 		if cm == nil {
 			return fail
 		}
-		resp, err := exchangeTunnelDNS(cm, s.servers[idx], q)
+		var resp *dns.Msg
+		var err error
+		if s.directDial != nil {
+			var conn net.Conn
+			conn, err = s.directDial(servers[idx])
+			if err == nil {
+				resp, err = exchangeDNSConn(conn, q)
+			}
+		} else {
+			resp, err = exchangeTunnelDNS(cm, servers[idx], q)
+		}
 		if err == nil {
-			s.preferred.Store(uint32(idx))
-			label := fmt.Sprintf("隧道正常 · 上游 %s", s.servers[idx])
+			pref.Store(uint32(idx))
+			route := "隧道正常"
+			if s.directDial != nil {
+				route = "物理网卡直连"
+			}
+			label := fmt.Sprintf("%s · 上游 %s", route, servers[idx])
 			s.status.Store(&label)
 			return resp
 		}
@@ -88,6 +113,10 @@ func exchangeTunnelDNS(cm *ClientMux, target string, q *dns.Msg) (*dns.Msg, erro
 	if err != nil {
 		return nil, err
 	}
+	return exchangeDNSConn(conn, q)
+}
+func exchangeDNSConn(conn net.Conn, q *dns.Msg) (*dns.Msg, error) {
+	var err error
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(3 * time.Second))
 	wire := &dns.Conn{Conn: conn}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -114,7 +115,14 @@ func (g *GUIController) toggleTUN() error {
 	if !g.running {
 		return fmt.Errorf("请先启动连接")
 	}
-	upstreams := g.cfg.DNSUpstreams
+	opts := g.cfg.networkOptions()
+	if err := opts.validate(); err != nil {
+		return err
+	}
+	upstreams, _ := dnsAddresses(opts.OtherDNS)
+	if opts.CustomDNS != "" {
+		upstreams, _ = dnsAddresses(opts.CustomDNS)
+	}
 	if len(upstreams) == 0 {
 		upstreams = []string{"1.1.1.1:53", "9.9.9.9:53"}
 	}
@@ -129,10 +137,10 @@ func (g *GUIController) toggleTUN() error {
 	for p := range g.probes {
 		nodes = append(nodes, p)
 	}
-	return GlobalTUN.start(g.proxyAddressLocked(), nodes, g.router, "127.0.0.1:53", upstreams, tunPrefixes, g.cfg.TUNBlockIPv6)
+	return GlobalTUN.start(g.proxyAddressLocked(), nodes, g.router, "127.0.0.1:53", upstreams, tunPrefixes, g.cfg.TUNBlockIPv6, opts)
 }
 
-func (t *TUNManager) start(proxyAddr string, nodes []*ClientMux, router *Router, dnsAddr string, upstreams []string, prefixes []netip.Prefix, block6 bool) (err error) {
+func (t *TUNManager) start(proxyAddr string, nodes []*ClientMux, router *Router, dnsAddr string, upstreams []string, prefixes []netip.Prefix, block6 bool, options ...NetworkOptions) (err error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.stopStack != nil {
@@ -141,6 +149,14 @@ func (t *TUNManager) start(proxyAddr string, nodes []*ClientMux, router *Router,
 	if !IsAdmin() {
 		return fmt.Errorf("请以管理员身份运行客户端后再启用 TUN")
 	}
+	opts := (&Config{}).networkOptions()
+	if len(options) > 0 {
+		opts = options[0]
+	}
+	if err = opts.validate(); err != nil {
+		return err
+	}
+	subnet, _ := opts.subnet()
 	h, err := loadBundledWintun()
 	if err != nil {
 		return err
@@ -160,13 +176,22 @@ func (t *TUNManager) start(proxyAddr string, nodes []*ClientMux, router *Router,
 	if block6 {
 		transport = ipv4Handler{handler}
 	}
-	stack, err := core.CreateStack(&core.Config{LinkEndpoint: dev, TransportHandler: transport})
+	link := newEchoLink(dev, opts.Echo, time.Duration(opts.EchoDelay)*time.Millisecond, block6)
+	stack, err := core.CreateStack(&core.Config{LinkEndpoint: link, TransportHandler: transport})
 	if err != nil {
 		dev.Close()
 		handler.Close()
 		return err
 	}
-	t.stopStack = func() { dev.Close(); stack.Close(); stack.Wait(); handler.Close() }
+	t.stopStack = func() {
+		link.stop()
+		dev.Close()
+		dev.Wait()
+		link.wait.Wait()
+		stack.Close()
+		stack.Wait()
+		handler.Close()
+	}
 	defer func() {
 		if err != nil {
 			t.stopLocked()
@@ -181,7 +206,7 @@ func (t *TUNManager) start(proxyAddr string, nodes []*ClientMux, router *Router,
 	if err != nil {
 		return err
 	}
-	if err = t.luid.AddIPAddresses([]netip.Prefix{netip.MustParsePrefix("10.0.85.2/24"), netip.MustParsePrefix("fd70:636d::2/128")}); err != nil {
+	if err = t.luid.AddIPAddresses([]netip.Prefix{subnet, netip.MustParsePrefix("fd70:636d::2/128")}); err != nil {
 		return fmt.Errorf("配置 TUN 双栈地址: %w", err)
 	}
 	t.pins = make(map[*ClientMux]hostRoute)
@@ -192,15 +217,69 @@ func (t *TUNManager) start(proxyAddr string, nodes []*ClientMux, router *Router,
 			return err
 		}
 	}
-	t.dns, err = startTunnelDNS(dnsAddr, nodes[0], router, upstreams)
-	if err != nil {
-		return fmt.Errorf("启动本地 DNS: %w", err)
+	bypass, _ := ipRanges(opts.Bypass)
+	policy := &tunPolicy{Dialer: p, opts: opts, virtual: t.luid, bypass: bypass}
+	if opts.DNS {
+		if opts.SelectedDNS && len(opts.Processes) > 0 {
+			dnsAddr = "127.0.0.1:0"
+		}
+		t.dns, err = startTunnelDNS(dnsAddr, nodes[0], router, upstreams, func(s *tunnelDNS) {
+			if opts.CustomDNS == "" {
+				s.china, _ = dnsAddresses(opts.ChinaDNS)
+				s.domains = append([]string{"cn"}, opts.ChinaDomains...)
+			}
+			if !opts.ProxyDNS {
+				s.directDial = func(address string) (net.Conn, error) {
+					if address == s.tcp.Addr().String() {
+						return nil, fmt.Errorf("DNS 上游指回本地监听地址")
+					}
+					ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+					defer cancel()
+					return physicalDial(ctx, "tcp", address, policy.virtual)
+				}
+			}
+		})
+		if err != nil {
+			return fmt.Errorf("启动本地 DNS: %w", err)
+		}
+		policy.resolver = t.dns.udp.LocalAddr().String()
 	}
-	if err = t.luid.SetDNS(windows.AF_INET, []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil); err != nil {
-		return fmt.Errorf("设置 TUN DNS: %w", err)
+	handler.SetDialer(policy)
+	if opts.DNS && (!opts.SelectedDNS || len(opts.Processes) == 0) {
+		if err = t.luid.SetDNS(windows.AF_INET, []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil); err != nil {
+			return fmt.Errorf("设置 TUN DNS: %w", err)
+		}
+
+	} else if !opts.DNS && opts.CustomDNS != "" {
+		addresses, _ := dnsAddresses(opts.CustomDNS)
+		v4, v6 := []netip.Addr{}, []netip.Addr{}
+		for _, a := range addresses {
+			ap := netip.MustParseAddrPort(a)
+			if ap.Port() != 53 {
+				return fmt.Errorf("关闭 DNS 接管时，网卡 DNS 必须使用 53 端口")
+			}
+			if ap.Addr().Is4() {
+				v4 = append(v4, ap.Addr())
+			} else {
+				v6 = append(v6, ap.Addr())
+			}
+		}
+		if len(v4) > 0 {
+			if err = t.luid.SetDNS(windows.AF_INET, v4, nil); err != nil {
+				return err
+			}
+		}
+		if len(v6) > 0 {
+			if err = t.luid.SetDNS(windows.AF_INET6, v6, nil); err != nil {
+				return err
+			}
+		}
 	}
 	for _, prefix := range prefixes {
 		via := netip.IPv4Unspecified()
+		if opts.Gateway != "" {
+			via = netip.MustParseAddr(opts.Gateway)
+		}
 		if prefix.Addr().Is6() {
 			via = netip.IPv6Unspecified()
 		}
@@ -320,7 +399,9 @@ func (t *TUNManager) adopt(old, next *ClientMux) {
 		return
 	}
 	t.activeNode = next
-	t.dns.client.Store(next)
+	if t.dns != nil {
+		t.dns.client.Store(next)
+	}
 	delete(t.pins, old)
 	t.collect()
 }
@@ -389,7 +470,9 @@ func (t *TUNManager) diagnostics() string {
 	v4 := check(&windows.SockaddrInet4{Addr: [4]byte{192, 0, 2, 1}})
 	v6 := check(&windows.SockaddrInet6{Addr: netip.MustParseAddr("2001:db8::1").As16()})
 	dnsState := "尚无查询"
-	if s := t.dns.status.Load(); s != nil {
+	if t.dns == nil {
+		dnsState = "DNS 接管已关闭"
+	} else if s := t.dns.status.Load(); s != nil {
 		dnsState = *s
 	}
 	return fmt.Sprintf("IPv4 路由 %s · IPv6 路由 %s\nDNS %s\n%s", v4, v6, dnsState, t.recovery)

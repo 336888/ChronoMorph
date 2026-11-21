@@ -38,4 +38,5 @@ func (*stubTUN) diagnostics() string          { return "TUN 未开启" }
 
 var GlobalTUN = &stubTUN{}
 
-func RunWindowsGUI(cfgPath string) {}
+func profileLatency(_ string, cm *ClientMux) (int64, error) { return MeasureTunnelLatency(cm) }
+func RunWindowsGUI(cfgPath string)                          {}

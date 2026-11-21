@@ -39,13 +39,14 @@ const (
 )
 
 type Config struct {
-	LockEntryType   bool     `json:"lock_entry_type,omitempty"`
-	TUNBlockIPv6    bool     `json:"tun_block_ipv6,omitempty"`
-	DNSUpstreams    []string `json:"dns_upstreams,omitempty"`
-	ChainEntry      string   `json:"chain_entry,omitempty"`
-	AdSubscriptions []string `json:"ad_subscriptions,omitempty"`
-	AdAllowDomains  []string `json:"ad_allow_domains,omitempty"`
-	AdPaused        bool     `json:"ad_paused,omitempty"`
+	Network         *NetworkOptions `json:"network,omitempty"`
+	LockEntryType   bool            `json:"lock_entry_type,omitempty"`
+	TUNBlockIPv6    bool            `json:"tun_block_ipv6,omitempty"`
+	DNSUpstreams    []string        `json:"dns_upstreams,omitempty"`
+	ChainEntry      string          `json:"chain_entry,omitempty"`
+	AdSubscriptions []string        `json:"ad_subscriptions,omitempty"`
+	AdAllowDomains  []string        `json:"ad_allow_domains,omitempty"`
+	AdPaused        bool            `json:"ad_paused,omitempty"`
 	TLSNode
 	Reality       *RealityConfig `json:"reality,omitempty"`
 	Website       *WebsiteConfig `json:"website,omitempty"`

@@ -107,7 +107,7 @@ func (u *desktopUI) font(size, weight int) uintptr {
 	return f
 }
 func (u *desktopUI) text(dc uintptr, x, y, w, h, size, weight, rgb int, s string) {
-	drawText(dc, u.rect(x, y, w, h), u.font(size, weight), rgb, s, 0x8824) // single line, vertical center, ellipsis, literal ampersands
+	drawText(dc, u.rect(x, y, w, h), u.font(size, weight), rgb, u.tr(s), 0x8824) // single line, vertical center, ellipsis, literal ampersands
 }
 func drawText(dc uintptr, rect winRect, font uintptr, rgb int, s string, flags uintptr) {
 	if s == "" {
@@ -207,6 +207,10 @@ func (u *desktopUI) run(ready chan<- error) {
 	u.inputBrush = gc("CreateSolidBrush", colorRef(editorBG))
 	u.backgroundBrush = gc("CreateSolidBrush", colorRef(bg))
 	u.setupControls()
+	u.ctrl.mu.Lock()
+	language := u.ctrl.cfg.networkOptions().Language
+	u.ctrl.mu.Unlock()
+	u.setLanguage(language)
 	u.setPage(homePage)
 	u.refresh()
 	uc("SetTimer", u.hwnd, 1, 1000, 0)
@@ -289,6 +293,13 @@ func desktopWindowProc(hwnd uintptr, msg uint32, w, l uintptr) uintptr {
 		case 0x0113:
 			if uc("IsWindowVisible", hwnd) != 0 {
 				u.refresh()
+			} else {
+				u.ctrl.mu.Lock()
+				scheduled := u.ctrl.cfg.networkOptions().Startup >= 0
+				u.ctrl.mu.Unlock()
+				if scheduled {
+					u.refresh()
+				}
 			}
 			return 0
 		case 0x0112:

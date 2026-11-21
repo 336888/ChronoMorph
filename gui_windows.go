@@ -83,6 +83,11 @@ func (g *GUIController) startTunnelLocked(cfg *Config, save bool) error {
 			if g.clients == nil {
 				g.clients = make(map[net.Conn]struct{})
 			}
+			if g.cfg.Network != nil && g.cfg.Network.LANOnly && !lanPeer(c.RemoteAddr()) {
+				g.mu.Unlock()
+				c.Close()
+				continue
+			}
 			g.clients[c] = struct{}{}
 			g.mu.Unlock()
 			go func() {

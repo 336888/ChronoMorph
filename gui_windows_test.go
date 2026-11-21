@@ -437,6 +437,41 @@ func TestWindowsGUIProcess(t *testing.T) {
 		t.Fatal("independent settings not persisted")
 	}
 	t.Log("Native chain saved offline; failed refresh retained rules; domain lookup, allow, remove, pause and resume verified")
+	click(navPrefs)
+	click(openNetwork)
+	setField(netHeartbeat, "12")
+	click(saveNetwork)
+	click(tabProcess)
+	setField(procNames, "game.exe")
+	click(procChildren)
+	click(procEcho)
+	setField(procDelay, "18")
+	click(saveNetwork)
+	click(tabAdapter)
+	setField(netAddress, "10.0.236.10")
+	setField(netGateway, "10.0.236.1")
+	setField(netBypass, "192.0.2.0/24")
+	click(saveNetwork)
+	click(tabDNS)
+	setField(dnsChina, "tcp://223.5.5.5:53")
+	setField(dnsDomains, "example.com")
+	click(saveNetwork)
+	wait("network options did not persist", func() bool {
+		data, _ := os.ReadFile(filepath.Join(cmd.Dir, "client.json"))
+		var cfg Config
+		if json.Unmarshal(data, &cfg) != nil || cfg.Network == nil {
+			return false
+		}
+		o := cfg.Network
+		return o.Heartbeat == 12 && o.Children && o.Echo && o.EchoDelay == 18 && len(o.Processes) == 1 && o.Gateway == "10.0.236.1" && len(o.Bypass) == 1 && o.ChinaDNS == "tcp://223.5.5.5:53" && len(o.ChinaDomains) == 1
+	})
+	click(tabAdapter)
+	setField(netMask, "255.0.255.0")
+	click(saveNetwork)
+	if !strings.Contains(controlText(notice), "掩码") {
+		t.Fatal("invalid mask accepted", controlText(notice))
+	}
+	click(navHome)
 
 	uc("SendMessageW", native, 0x10, 0, 0)
 	if uc("IsWindowVisible", native) != 0 {

@@ -7,7 +7,13 @@ import (
 
 func (g *GUIController) StartAutoFailover(stopCh <-chan struct{}) {
 	go func() {
-		ticker := time.NewTicker(20 * time.Second)
+		interval := func() time.Duration {
+			g.mu.Lock()
+			defer g.mu.Unlock()
+			return time.Duration(g.cfg.networkOptions().Heartbeat) * time.Second
+		}
+		period := func() time.Duration { return max(2*time.Second, interval()) }
+		ticker := time.NewTimer(period())
 		defer ticker.Stop()
 		var observed *ClientMux
 		consecutiveFails := 0
@@ -16,6 +22,7 @@ func (g *GUIController) StartAutoFailover(stopCh <-chan struct{}) {
 			case <-stopCh:
 				return
 			case <-ticker.C:
+				ticker.Reset(period())
 				g.mu.Lock()
 				running, cm, cfg := g.running, g.cm, g.cfg
 				g.mu.Unlock()

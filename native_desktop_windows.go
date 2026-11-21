@@ -37,6 +37,10 @@ const (
 	domainPage
 	benchPage
 	healthPage
+	generalNetPage
+	processNetPage
+	adapterNetPage
+	dnsNetPage
 )
 const (
 	navHome = iota + 100
@@ -119,6 +123,11 @@ type desktopResult struct {
 	measuredClient *ClientMux
 }
 type desktopUI struct {
+	language                                          string
+	checked                                           map[int]bool
+	quickNodes                                        []NodeProfile
+	probeClient                                       *ClientMux
+	probeDue                                          time.Time
 	qualityCancel                                     context.CancelFunc
 	qualitySeq                                        uint64
 	qualityResults                                    chan qualityResult
@@ -185,6 +194,7 @@ func (u *desktopUI) setupControls() {
 	for i, name := range []string{"连接概览", "实时连接", "我的节点", "链式代理", "去广告", "连接日志", "设置"} {
 		u.button(navHome+i, 0, 14, 114+i*49, 158, 41, name)
 	}
+	u.setupNetworkControls()
 	u.setupLiveControls()
 	u.button(importAction, 0, 704, 27, 113, 37, "导入节点")
 	u.button(toggleAction, homePage, 650, 130, 139, 43, "启动连接")
@@ -246,6 +256,9 @@ func (u *desktopUI) setPage(page int) {
 	u.isError = false
 	for id, c := range u.controls {
 		show := c.page == 0 || c.page == page || (id == backAction && (page == manualPage || page == importPage))
+		if c.page == -2 {
+			show = page >= generalNetPage && page <= dnsNetPage
+		}
 		if id == importAction && (page == importPage || page == manualPage) {
 			show = false
 		}
@@ -256,6 +269,8 @@ func (u *desktopUI) setPage(page int) {
 		uc("ShowWindow", c.h, cmd)
 	}
 	switch page {
+	case generalNetPage, processNetPage, adapterNetPage, dnsNetPage:
+		u.loadNetworkPage()
 	case benchPage:
 		setText(u.controls[benchEdit].h, u.benchText)
 	case chainPage:
@@ -314,7 +329,7 @@ func (u *desktopUI) setPage(page int) {
 func (u *desktopUI) label(id int, s string) {
 	if c := u.controls[id]; c != nil && c.label != s {
 		c.label = s
-		setText(c.h, s)
+		setText(c.h, u.tr(s))
 		uc("InvalidateRect", c.h, 0, 1)
 	}
 }
@@ -358,7 +373,19 @@ func (u *desktopUI) refresh() {
 		u.rtt = -1
 		u.current = g.cm
 	}
+	startup := g.cfg.networkOptions().Startup
 	g.mu.Unlock()
+	if u.probeClient != u.current {
+		u.probeClient = u.current
+		u.probeDue = time.Time{}
+		if u.current != nil && startup >= 0 {
+			u.probeDue = time.Now().Add(time.Duration(startup) * time.Second)
+		}
+	}
+	if !u.probeDue.IsZero() && !time.Now().Before(u.probeDue) && !u.busy {
+		u.probeDue = time.Time{}
+		u.command(pingAction)
+	}
 	u.tx, u.rx = LiveStats.txSpeedBps.Load(), LiveStats.rxSpeedBps.Load()
 	if u.page == prefsPage {
 		u.auto = IsAutoStartEnabled()
@@ -532,6 +559,9 @@ func (u *desktopUI) command(id int) {
 			return
 		}
 	}
+	if u.networkCommand(id) {
+		return
+	}
 	switch id {
 	case copyFlow, dropFlow:
 		u.flowAction(id)
@@ -679,8 +709,11 @@ func (u *desktopUI) command(id int) {
 			return
 		}
 		u.work(func() desktopResult {
-			ms, err := MeasureTunnelLatency(cm)
-			return desktopResult{measured: true, measuredClient: cm, ping: ms, err: err, message: "已收到服务端应答"}
+			g.mu.Lock()
+			method := g.cfg.networkOptions().Probe
+			g.mu.Unlock()
+			ms, err := profileLatency(method, cm)
+			return desktopResult{measured: true, measuredClient: cm, ping: ms, err: err, message: method + " 测速完成"}
 		})
 	case proxyAction:
 		u.work(func() desktopResult { return desktopResult{err: g.toggleSystemProxy()} })

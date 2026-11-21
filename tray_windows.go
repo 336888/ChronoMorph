@@ -4,7 +4,9 @@ package main
 
 import (
 	_ "embed"
+	"fmt"
 	"log"
+	"time"
 
 	"github.com/getlantern/systray"
 )
@@ -23,11 +25,75 @@ func RunTray(ctrl *GUIController, showWindow, onExit func()) {
 		mMode := systray.AddMenuItem("切换路由模式 (分流/全局)", "实时切换智能分流与全局代理")
 		mBest := systray.AddMenuItem("自动优选最快节点", "并发测速并切换至延迟最低的 VPS")
 		systray.AddSeparator()
+		quickMenu := systray.AddMenuItem("快捷节点", "切换到已保存的节点")
+		type slot struct {
+			item    *systray.MenuItem
+			profile NodeProfile
+		}
+		slots := make([]slot, 12)
+		clicked := make(chan int, 12)
+		done := make(chan struct{})
+		for i := range slots {
+			item := quickMenu.AddSubMenuItem(fmt.Sprint(i+1), "")
+			item.Hide()
+			slots[i].item = item
+			go func() {
+				for {
+					select {
+					case <-done:
+						return
+					case <-item.ClickedCh:
+						select {
+						case clicked <- i:
+						case <-done:
+							return
+						}
+					}
+				}
+			}()
+		}
+		refreshQuick := func() {
+			ctrl.mu.Lock()
+			cfg := ctrl.cfg
+			ctrl.mu.Unlock()
+			n := min(len(cfg.Profiles), max(0, cfg.networkOptions().Quick), len(slots))
+			for i := range slots {
+				s := &slots[i]
+				if i >= n {
+					if s.profile.ServerIP != "" {
+						s.item.Hide()
+						s.profile = NodeProfile{}
+					}
+					continue
+				}
+				p := cfg.Profiles[i]
+				if s.profile == p {
+					continue
+				}
+				s.profile = p
+				label := p.Name
+				if label == "" {
+					label = p.ServerIP
+				}
+				s.item.SetTitle(label)
+				s.item.Show()
+			}
+		}
+		refreshQuick()
 		mQuit := systray.AddMenuItem("彻底退出", "关闭隧道并还原系统代理")
 
 		go func() {
+			ticker := time.NewTicker(2 * time.Second)
+			defer ticker.Stop()
+			defer close(done)
 			for {
 				select {
+				case <-ticker.C:
+					refreshQuick()
+				case i := <-clicked:
+					if err := ctrl.switchQuick(slots[i].profile); err != nil {
+						log.Print(err)
+					}
 				case <-mOpen.ClickedCh:
 					showWindow()
 				case <-mToggle.ClickedCh:

@@ -56,9 +56,9 @@ func (g *GUIController) BenchAllProfiles() []NodePingResult {
 				p := profiles[i]
 				r := NodePingResult{Index: i, Name: p.Name, IP: p.ServerIP, RTTMs: -1}
 				if active != nil && p.ServerIP == cfg.ServerIP && p.MasterKey == cfg.MasterKey && p.TLSNode == cfg.TLSNode {
-					r.RTTMs, _ = MeasureTunnelLatency(active)
+					r.RTTMs, _ = profileLatency(cfg.networkOptions().Probe, active)
 				} else if cm, err := g.newProbe(p); err == nil {
-					r.RTTMs, _ = MeasureTunnelLatency(cm)
+					r.RTTMs, _ = profileLatency(cfg.networkOptions().Probe, cm)
 					g.finishProbe(cm)
 				}
 				results[i] = r

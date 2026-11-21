@@ -30,9 +30,11 @@ func (u *desktopUI) paint(dc uintptr) {
 	}
 	rounded(dc, u.rect(22, 510, 8, 8), u.px(4), dot, dot)
 	u.text(dc, 38, 498, 140, 31, 12, 500, muted, state)
-	title := map[int]string{homePage: "连接概览", livePage: "实时连接", benchPage: "节点延迟测试", healthPage: "路由与 DNS 检查", nodesPage: "我的节点", logsPage: "连接日志", prefsPage: "设置", importPage: "导入节点", manualPage: "手动添加节点", chainPage: "链式代理", adsPage: "去广告", domainPage: "域名检查与放行"}[u.page]
+	title := map[int]string{generalNetPage: "网络设置", processNetPage: "进程模式", adapterNetPage: "WinTUN 设置", dnsNetPage: "DNS 分流", homePage: "连接概览", livePage: "实时连接", benchPage: "节点延迟测试", healthPage: "路由与 DNS 检查", nodesPage: "我的节点", logsPage: "连接日志", prefsPage: "设置", importPage: "导入节点", manualPage: "手动添加节点", chainPage: "链式代理", adsPage: "去广告", domainPage: "域名检查与放行"}[u.page]
 	u.text(dc, 212, 18, 435, 51, 29, 700, fg, title)
 	switch u.page {
+	case generalNetPage, processNetPage, adapterNetPage, dnsNetPage:
+		u.paintNetwork(dc)
 	case homePage:
 		u.card(dc, 211, 92, 607, 119, 0x132c34)
 		u.line(dc, 233, 111, 261, 111, 3, mint)
@@ -145,7 +147,7 @@ func (u *desktopUI) paintButton(item *drawItem) {
 	nav := id >= navHome && id <= navPrefs
 	if nav {
 		fill, stroke, ink = side, side, muted
-		active := u.page == id-navHome+1 || (id == navAds && u.page == domainPage) || (id == navNodes && (u.page == manualPage || u.page == importPage || u.page == benchPage))
+		active := u.page == id-navHome+1 || (id == navPrefs && u.page >= generalNetPage || id == navAds && u.page == domainPage) || (id == navNodes && (u.page == manualPage || u.page == importPage || u.page == benchPage))
 		if active {
 			fill, stroke, ink = 0x18343c, 0x23484b, mint
 		}
@@ -188,5 +190,5 @@ func (u *desktopUI) paintButton(item *drawItem) {
 	if id == pingAction {
 		size = 12
 	}
-	drawText(dc, r, u.font(size, 600), ink, strings.TrimSpace(c.label), align)
+	drawText(dc, r, u.font(size, 600), ink, u.tr(strings.TrimSpace(c.label)), align)
 }
