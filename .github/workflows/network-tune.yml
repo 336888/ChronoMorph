@@ -27,7 +27,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Bash syntax
-        run: bash -n slacker-tune.sh cm.sh tests/tune-installer-compat.sh
+        run: |
+          for script in slacker-tune.sh cm.sh tests/tune-installer-compat.sh; do
+            bash -n "$script"
+          done
       - name: Isolated installer and rollback tests
         run: python3 tests/tune.py
       - name: Service installer compatibility
