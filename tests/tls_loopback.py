@@ -143,7 +143,7 @@ def exercise_dual_failover(resources, server_cfg, tls_port, client_port, key, tc
 with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as resources:
     directory = Path(tmp)
     key = subprocess.check_output([EXE, "keygen"], text=True).split()[-1]
-    pin = subprocess.check_output([EXE, "tls-identity", "-create", "-dir", tmp], text=True).strip()
+    pin = subprocess.check_output([SERVER_EXE, "tls-identity", "-create", "-dir", tmp], text=True).strip()
     tls_port, client_port = free_port(), free_port()
     strict = "--tls-only" in sys.argv
     if strict:

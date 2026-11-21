@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -82,10 +83,19 @@ func main() {
 		fs := flag.NewFlagSet("tls-identity", flag.ExitOnError)
 		dir := fs.String("dir", "/etc/chronomorph", "server configuration directory")
 		create := fs.Bool("create", false, "create the identity if missing")
+		subject := fs.Bool("subject", false, "print the public certificate subject instead of the SHA-256 pin")
 		_ = fs.Parse(os.Args[2:])
 		cert, err := serverIdentity(*dir, *create)
 		if err != nil {
 			log.Fatal(err)
+		}
+		if *subject {
+			leaf, err := x509.ParseCertificate(cert.Certificate[0])
+			if err != nil {
+				log.Fatal(err)
+			}
+			fmt.Println(leaf.Subject.String())
+			return
 		}
 		fmt.Printf("%x\n", sha256.Sum256(cert.Certificate[0]))
 	case "keygen":

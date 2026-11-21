@@ -57,9 +57,15 @@ func issueCertificate(key ed25519.PrivateKey, usage x509.ExtKeyUsage, name strin
 	if err != nil {
 		return nil, err
 	}
+	subject := pkix.Name{CommonName: name}
+	if name == "" {
+		// A self-signed certificate needs a non-empty issuer DN. Its unique
+		// serial is sufficient: clients authenticate the full certificate by pin.
+		subject.SerialNumber = serial.Text(16)
+	}
 	now := time.Now()
 	cert := &x509.Certificate{
-		SerialNumber: serial, Subject: pkix.Name{CommonName: name},
+		SerialNumber: serial, Subject: subject,
 		NotBefore: now.Add(-24 * time.Hour), NotAfter: now.AddDate(5, 0, 0),
 		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{usage},
 		BasicConstraintsValid: true,
@@ -112,7 +118,7 @@ func serverIdentity(dir string, create bool) (tls.Certificate, error) {
 	if err != nil {
 		return pair, err
 	}
-	der, err := issueCertificate(key, x509.ExtKeyUsageServerAuth, "ChronoMorph")
+	der, err := issueCertificate(key, x509.ExtKeyUsageServerAuth, "")
 	if err != nil {
 		return pair, err
 	}

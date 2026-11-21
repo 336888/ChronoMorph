@@ -10,6 +10,7 @@ CFG_DIR="/etc/chronomorph"
 CFG_FILE="${CFG_DIR}/server.json"
 NFT_FILE="/etc/nftables.d/chronomorph.nft"
 SERVICE_FILE="/etc/systemd/system/chronomorph.service"
+DEPLOY_LOCK=/run/lock/chronomorph-install.lock
 LISTEN_PORT=40000
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; PLAIN='\033[0m'
@@ -155,7 +156,7 @@ do_install() (
     set -e
     export DEBIAN_FRONTEND=noninteractive
     local name work mk listen version previous=0 was_active=0
-    exec 9>/run/lock/chronomorph-install.lock
+    exec 9>"$DEPLOY_LOCK"
     flock -n 9 || { echo "已有安装任务在运行" >&2; exit 1; }
     name=$(release_binary_name)
     mkdir -p "$(dirname "$BIN_PATH")"
@@ -291,7 +292,7 @@ enable_tls() (
     set -e
     [[ -f "$CFG_FILE" && -x "$BIN_PATH" ]] || { echo '请先选 1 安装或升级服务端'; return 1; }
     local current port work pin
-    exec 9>/run/lock/chronomorph-install.lock
+    exec 9>"$DEPLOY_LOCK"
     flock -n 9 || { echo '已有部署任务在运行' >&2; return 1; }
     current=$(jq -r '.tls_listen // ""' "$CFG_FILE")
     current=${current##*:}
@@ -321,6 +322,75 @@ enable_tls() (
     return 1
 )
 
+migrate_tls_identity() (
+    local current="$CFG_DIR/transport.pem" subject before after backup answer state active=0
+    exec 9>"$DEPLOY_LOCK" || return 1
+    flock -n 9 || { echo '已有部署任务在运行' >&2; return 1; }
+    [[ -x "$BIN_PATH" && -f "$CFG_FILE" && -f "$current" && ! -L "$current" ]] || {
+        echo '需要已安装的服务端及本地 TLS 证书。' >&2; return 1;
+    }
+    subject=$("$BIN_PATH" tls-identity -dir "$CFG_DIR" -subject) || {
+        echo '无法读取证书，请先用 v1.2.5 或更新的离线包选 1 升级。' >&2; return 1;
+    }
+    if [[ $subject != 'CN=ChronoMorph' ]]; then
+        echo "当前证书主题为 $subject，无需迁移旧版默认名称。"
+        return 0
+    fi
+    [[ -n $(jq -er '.tls_listen // empty' "$CFG_FILE") ]] || {
+        echo '请先选 9 设置 TLS 监听端口。' >&2; return 1;
+    }
+    before=$("$BIN_PATH" tls-identity -dir "$CFG_DIR") || return 1
+    state=$(systemctl show --property=ActiveState --value chronomorph) || return 1
+    case "$state" in
+        active|reloading) active=1 ;;
+        inactive|failed) ;;
+        *) echo "当前服务状态为 $state，请等待状态稳定后重试。" >&2; return 1 ;;
+    esac
+    echo "当前 TLS 指纹：$before"
+    echo '迁移会更换证书及指纹，运行中的服务将短暂重启，所有使用 TLS 的客户端都需要重新导入链接。'
+    read -rp '现在迁移？[y/N] ' answer || return 1
+    [[ $answer == y || $answer == Y ]] || return 0
+
+    umask 077
+    backup=$(mktemp -d "$CFG_DIR/tls-backup.XXXXXXXX") || return 1
+    install -m 600 -- "$current" "$backup/original.pem" || return 1
+    after=$("$BIN_PATH" tls-identity -create -dir "$backup") || return 1
+    [[ $after =~ ^[0-9a-f]{64}$ && $after != "$before" ]] || return 1
+    subject=$("$BIN_PATH" tls-identity -dir "$backup" -subject) || return 1
+    [[ $subject =~ ^SERIALNUMBER=[0-9a-f]+$ ]] || { echo '候选证书的主题不符合预期，已保留当前证书。' >&2; return 1; }
+    echo "旧证书与私钥已备份到 $backup/original.pem"
+
+    # The saved pair and the replacement are on the same filesystem. Roll
+    # back both disk and the running listener if verification is interrupted.
+    (
+        restore_on_failure() {
+            local rc=$?
+            trap - EXIT HUP INT TERM
+            if ((rc != 0)) && [[ ! -e "$backup/transport.pem" ]]; then
+                if ln -- "$backup/original.pem" "$backup/restore.pem" && mv -fT -- "$backup/restore.pem" "$current"; then
+                    if ((active == 0)) || { systemctl restart chronomorph && check_tcp_entry; }; then
+                        echo '迁移未完成，旧证书已恢复。' >&2
+                    else
+                        echo '旧证书已恢复到磁盘，请检查 chronomorph 服务状态。' >&2
+                    fi
+                else
+                    echo "自动恢复失败，旧证书仍在 $backup/original.pem" >&2
+                fi
+            fi
+            exit "$rc"
+        }
+        trap restore_on_failure EXIT
+        trap 'exit 1' HUP INT TERM
+        mv -fT -- "$backup/transport.pem" "$current" || exit 1
+        if ((active)); then
+            systemctl restart chronomorph && check_tcp_entry || exit 1
+        fi
+    ) || return 1
+    echo "新 TLS 指纹：$after"
+    if ((active == 0)); then echo '服务当前已停止，新证书将在下次启动时使用。'; fi
+    echo '请选择 4 导出新链接，在各客户端重新导入。'
+)
+
 show_traffic_stats() {
     curl -s --max-time 2 http://127.0.0.1:40001/stats | jq . || echo -e "${RED}服务未运行${PLAIN}"
 }
@@ -348,12 +418,13 @@ main_menu() {
         echo -e "${CYAN}=== ChronoMorph Debian 管理面板 [$(get_status_badge)] ===${PLAIN}"
         echo "1. 一键安装部署    2. 状态与跳频排障  3. 实时日志"
         echo "4. 导出分享链接    5. 实时流量看板    6. 热重载配置"
-        echo "7. 打包备份配置    8. 彻底卸载    9. 设置双协议 TCP 端口    0. 退出"
-        read -rp "请选择 [0-9]: " ch
+        echo "7. 打包备份配置    8. 彻底卸载    9. 设置双协议 TCP 端口"
+        echo "10. 迁移旧版 TLS 证书    0. 退出"
+        read -rp "请选择 [0-10]: " ch
         case "$ch" in
             1) do_install ;; 2) show_status ;; 3) journalctl -u chronomorph -f -n 50 || true ;;
             4) show_links ;; 5) show_traffic_stats ;; 6) systemctl reload-or-restart chronomorph ;;
-            7) do_backup ;; 8) do_uninstall ;; 9) enable_tls ;; 0) exit 0 ;;
+            7) do_backup ;; 8) do_uninstall ;; 9) enable_tls ;; 10) migrate_tls_identity || echo "证书迁移未完成" >&2 ;; 0) exit 0 ;;
         esac
         read -rp "按回车返回..." _
     done
